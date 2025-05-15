@@ -1,5 +1,7 @@
 # Custom Go Plugin for Jaeger
 
+**Note:** This plugin is under heavily development and needed to use with this Fluent Bit's PR: https://github.com/fluent/fluent-bit/pull/10299
+
 This plugin implements Jaeger Remote Sampling protocol on Golang cutom plugin mechanism.
 
 ## Prerequisites
