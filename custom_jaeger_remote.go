@@ -29,17 +29,17 @@ type jeagerRemotePlugin struct {
 
 func configure(ctx context.Context, fbit *plugin.Fluentbit, plug *jeagerRemotePlugin) error {
 	plug.log = fbit.Logger
-	plug.serverURL = fbit.Conf.String("serverURL")
-	plug.samplingURL = fbit.Conf.String("samplingURL")
-	plug.log.Debug("[jaeger_remote] serverURL = '%s'", plug.serverURL)
-	plug.log.Debug("[jaeger_remote] samplingURL = '%s'", plug.samplingURL)
+	plug.serverURL = fbit.Conf.String("server_url")
+	plug.samplingURL = fbit.Conf.String("sampling_url")
+	plug.log.Debug("[jaeger_remote] server_url = '%s'", plug.serverURL)
+	plug.log.Debug("[jaeger_remote] sampling_url = '%s'", plug.samplingURL)
 
 	if plug.serverURL == "" {
-		return errors.New("jarger_remote: serverURL must be set")
+		return errors.New("jarger_remote: server_url must be set")
 	}
 
 	if plug.samplingURL == "" {
-		return errors.New("jarger_remote: samplingURL must be set")
+		return errors.New("jarger_remote: sampling_url must be set")
 	}
 
 	if s := fbit.Conf.String("rate"); s != "" {
