@@ -3,6 +3,7 @@ module fluentbit.io/custom_plugin/jaegerremote
 go 1.23.0
 
 require (
+	github.com/alecthomas/assert/v2 v2.11.0
 	github.com/calyptia/plugin v1.4.1
 	go.opentelemetry.io/contrib/samplers/jaegerremote v0.29.0
 	go.opentelemetry.io/otel v1.35.0
@@ -12,6 +13,7 @@ require (
 )
 
 require (
+	github.com/alecthomas/repr v0.4.0 // indirect
 	github.com/calyptia/cmetrics-go v0.1.7 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -20,6 +22,7 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.26.1 // indirect
+	github.com/hexops/gotextdiff v1.0.3 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/ugorji/go/codec v1.2.12 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
