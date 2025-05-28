@@ -29,8 +29,8 @@ For custom jeager plugin, we need to add custom section in fluent-bit conf:
 ```
 [CUSTOM]
     Name jaeger_remote
-    serverURL "http://localhost:14268"
-    samplingURL "http://localhost:5778/sampling"
+    server_url "http://localhost:14268"
+    sampling_url "http://localhost:5778/sampling"
     rate 5s
 ```
 
