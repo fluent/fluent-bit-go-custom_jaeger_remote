@@ -1,1 +1,3 @@
 *.so
+fluent-bit.conf
+plugins.conf
