@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"time"
+	"strconv"
 
 	"github.com/calyptia/plugin"
 	"go.opentelemetry.io/contrib/samplers/jaegerremote"
@@ -12,12 +14,21 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/trace"
+
+	"google.golang.org/grpc"
+	pb "github.com/fluent/fluent-bit-go-custom_jaeger_remote/proto/apipb"
 )
 
 const defaultRate = 1 * time.Second
+const defaultPort = 5779
 
 func init() {
 	plugin.RegisterCustom("jaeger_remote", "Jaeger remote sampling", &jeagerRemotePlugin{})
+}
+
+// server is used to implement helloworld.GreeterServer.
+type jaegergRPCServer struct {
+	pb.UnimplementedSamplingManagerServer
 }
 
 type jeagerRemotePlugin struct {
@@ -25,12 +36,15 @@ type jeagerRemotePlugin struct {
 	serverURL   string
 	samplingURL string
 	rate        time.Duration // default 1s
+	listenPort  string
+	port        int64
 }
 
 func configure(ctx context.Context, fbit *plugin.Fluentbit, plug *jeagerRemotePlugin) error {
 	plug.log = fbit.Logger
 	plug.serverURL = fbit.Conf.String("server_url")
 	plug.samplingURL = fbit.Conf.String("sampling_url")
+	plug.listenPort = fbit.Conf.String("listen_port")
 	plug.log.Debug("[jaeger_remote] server_url = '%s'", plug.serverURL)
 	plug.log.Debug("[jaeger_remote] sampling_url = '%s'", plug.samplingURL)
 
@@ -62,6 +76,17 @@ func configure(ctx context.Context, fbit *plugin.Fluentbit, plug *jeagerRemotePl
 
 	if plug.rate == 0 {
 		plug.rate = defaultRate
+	}
+
+	if plug.listenPort != "" {
+		port, err := strconv.ParseInt(plug.listenPort, 10, 0)
+		if err == nil {
+			plug.port = port
+		} else {
+			plug.port = defaultPort
+		}
+	} else {
+		plug.port = defaultPort
 	}
 
 	return nil
@@ -116,6 +141,19 @@ func (plug *jeagerRemotePlugin) Init(ctx context.Context, fbit *plugin.Fluentbit
 		for {
 			<-ticker
 			plug.log.Debug("[jaeger_remote] jeager sampling is alive %v", time.Now())
+		}
+	}()
+
+	go func() {
+		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", plug.port))
+		if err != nil {
+			plug.log.Warn("[jaeger_remote] failed to listen: %v", err)
+		}
+		s := grpc.NewServer()
+		pb.RegisterSamplingManagerServer(s, &jaegergRPCServer{})
+		plug.log.Debug("[jaeger_remote] server listening at %v", lis.Addr())
+		if err := s.Serve(lis); err != nil {
+			plug.log.Warn("[jaeger_remote] failed to serve: %v", err)
 		}
 	}()
 
