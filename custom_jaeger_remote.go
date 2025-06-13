@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/calyptia/plugin"
@@ -12,6 +13,10 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/trace"
+
+	api_v2 "github.com/jaegertracing/jaeger-idl/proto-gen/api_v2"
+
+	"google.golang.org/grpc"
 )
 
 const defaultRate = 1 * time.Second
@@ -20,11 +25,59 @@ func init() {
 	plugin.RegisterCustom("jaeger_remote", "Jaeger remote sampling", &jeagerRemotePlugin{})
 }
 
+type Config struct {
+	Endpoint        string
+	PollingInterval time.Duration
+	ServiceNames    []string
+	HttpListenAddr  string
+	GrpcListenAddr  string
+	TLS             TLSClientSettings
+	Headers         map[string]string
+	Keepalive	 *KeepaliveConfig
+	Retry		 *RetryConfig
+}
+
+type KeepaliveConfig struct {
+	Time		    time.Duration
+	Timeout		    time.Duration
+	PermitWithoutStream bool
+}
+
+type RetryConfig struct {
+	InitialInterval time.Duration
+	MaxInterval	time.Duration
+	Multiplier	float64
+}
+
+type TLSClientSettings struct {
+	Insecure                              bool
+	ServerName, CAFile, CertFile, KeyFile string
+}
+
+type remoteSampler struct {
+	client api_v2.SamplingManagerClient
+	conn   *grpc.ClientConn
+}
+
+type samplingStrategyCache struct {
+	sync.RWMutex
+	strategies map[string]*api_v2.SamplingStrategyResponse
+}
+
+type grpcApiServer struct {
+	api_v2.UnimplementedSamplingManagerServer
+	cache *samplingStrategyCache
+	log   plugin.Logger
+}
+
 type jeagerRemotePlugin struct {
 	log         plugin.Logger
 	serverURL   string
 	samplingURL string
 	rate        time.Duration // default 1s
+	sampler    *remoteSampler
+	cache      *samplingStrategyCache
+	config     *Config
 }
 
 func configure(ctx context.Context, fbit *plugin.Fluentbit, plug *jeagerRemotePlugin) error {
