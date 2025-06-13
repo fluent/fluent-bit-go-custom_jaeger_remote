@@ -2,130 +2,160 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"net/http"
+	"sync"
 	"time"
 
 	"github.com/calyptia/plugin"
-	"go.opentelemetry.io/contrib/samplers/jaegerremote"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/sdk/trace"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
+	api_v2 "github.com/jaegertracing/jaeger-idl/proto-gen/api_v2"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/metadata"
 )
 
 const defaultRate = 1 * time.Second
 
 func init() {
-	plugin.RegisterCustom("jaeger_remote", "Jaeger remote sampling", &jeagerRemotePlugin{})
+	plugin.RegisterCustom("jaeger_remote", "Jaeger remote sampling", &jaegerRemotePlugin{})
 }
 
-type jeagerRemotePlugin struct {
-	log         plugin.Logger
-	serverURL   string
-	samplingURL string
-	rate        time.Duration // default 1s
+//
+// --- Plugin Data Structures ---
+//
+
+type jaegerRemotePlugin struct {
+	log          plugin.Logger
+	config       *Config
+	server       *serverComponent // Server-related state
+	clientTracer *clientComponent // Client-related state
 }
 
-func configure(ctx context.Context, fbit *plugin.Fluentbit, plug *jeagerRemotePlugin) error {
+type serverComponent struct {
+	sampler    *remoteSampler
+	cache      *samplingStrategyCache
+	httpServer *http.Server
+	grpcServer *grpc.Server
+}
+
+type clientComponent struct {
+	tracerProvider *sdktrace.TracerProvider
+}
+
+type Config struct {
+	Mode    string // "client", "server", or "all"
+	Headers map[string]string
+	// Client-specific settings
+	ClientServerURL   string
+	ClientSamplingURL string
+	// Server-specific settings
+	ServerEndpoint       string
+	ServerHttpListenAddr string
+	ServerGrpcListenAddr string
+	ServerServiceNames   []string
+	ServerTLS            TLSSettings
+	ServerHeaders        map[string]string
+	ServerKeepalive      *KeepaliveConfig
+	ServerRetry          *RetryConfig
+}
+
+type KeepaliveConfig struct {
+	Time, Timeout       time.Duration
+	PermitWithoutStream bool
+}
+type RetryConfig struct {
+	InitialInterval, MaxInterval time.Duration
+	Multiplier                   float64
+}
+type TLSSettings struct {
+	Insecure                              bool
+	ServerName, CAFile, CertFile, KeyFile string
+}
+type remoteSampler struct {
+	client api_v2.SamplingManagerClient
+	conn   *grpc.ClientConn
+}
+type samplingStrategyCache struct {
+	sync.RWMutex
+	strategies map[string]*api_v2.SamplingStrategyResponse
+}
+type grpcApiServer struct {
+	api_v2.UnimplementedSamplingManagerServer
+	cache *samplingStrategyCache
+	log   plugin.Logger
+}
+
+//
+// --- Main Plugin Initialization ---
+//
+
+func (plug *jaegerRemotePlugin) Init(ctx context.Context, fbit *plugin.Fluentbit) error {
 	plug.log = fbit.Logger
-	plug.serverURL = fbit.Conf.String("server_url")
-	plug.samplingURL = fbit.Conf.String("sampling_url")
-	plug.log.Debug("[jaeger_remote] server_url = '%s'", plug.serverURL)
-	plug.log.Debug("[jaeger_remote] sampling_url = '%s'", plug.samplingURL)
-
-	if plug.serverURL == "" {
-		return errors.New("jarger_remote: server_url must be set")
+	cfg, err := loadConfig(fbit)
+	if err != nil {
+		plug.log.Error("configuration error: %v", err)
+		return err
 	}
+	plug.config = cfg
 
-	if plug.samplingURL == "" {
-		return errors.New("jarger_remote: sampling_url must be set")
-	}
-
-	if s := fbit.Conf.String("rate"); s != "" {
-		var err error
-		plug.rate, err = time.ParseDuration(s)
-		if err != nil {
-			return fmt.Errorf("jarger_remote: parse rate as duration: %w", err)
+	// Run client mode
+	if cfg.Mode == "client" || cfg.Mode == "all" {
+		if err := plug.initClient(ctx); err != nil {
+			return fmt.Errorf("failed to initialize client mode: %w", err)
 		}
-
-		if plug.rate < 0 {
-			return errors.New("jarger_remote: rate must be a positive duration")
-		}
-
-		if plug.rate == 0 {
-			plug.log.Info("jarger_remote: rate set to 0, using default rate %s", defaultRate)
-		}
-	} else {
-		plug.log.Info("jarger_remote: rate not set, using default rate %s", defaultRate)
 	}
 
-	if plug.rate == 0 {
-		plug.rate = defaultRate
+	// Run server mode
+	if cfg.Mode == "server" || cfg.Mode == "all" {
+		if err := plug.initServer(ctx); err != nil {
+			return fmt.Errorf("failed to initialize server mode: %w", err)
+		}
 	}
 
+	plug.log.Info("plugin initialized successfully in mode: '%s'", cfg.Mode)
 	return nil
 }
 
-func newSampler(plug *jeagerRemotePlugin) *jaegerremote.Sampler {
-	return jaegerremote.New(
-		"fluent-bit-go",
-		jaegerremote.WithSamplingServerURL(plug.samplingURL),
-		jaegerremote.WithSamplingRefreshInterval(10*time.Second), // decrease polling interval to get quicker feedback
-		jaegerremote.WithInitialSampler(trace.TraceIDRatioBased(0.5)),
-	)
-}
+//
+// --- Helper Functions ---
+//
 
-func newTraceProvider(
-	ctx context.Context,
-	plug *jeagerRemotePlugin,
-	sampler *jaegerremote.Sampler,
-) (*trace.TracerProvider, error) {
-	client := otlptracehttp.NewClient(
-		otlptracehttp.WithEndpoint(plug.serverURL),
-		otlptracehttp.WithCompression(otlptracehttp.GzipCompression),
-	)
-	exporter, err := otlptrace.New(ctx, client)
+func newRemoteSampler(ctx context.Context, cfg *Config) (*remoteSampler, error) {
+	tlsConfig, err := loadTLSConfig(cfg.ServerTLS)
 	if err != nil {
 		return nil, err
 	}
-
-	tp := trace.NewTracerProvider(
-		trace.WithSampler(sampler),
-		trace.WithSyncer(exporter), // for production usage, use trace.WithBatcher(exporter)
-	)
-	otel.SetTracerProvider(tp)
-
-	return tp, nil
-}
-
-func (plug *jeagerRemotePlugin) Init(ctx context.Context, fbit *plugin.Fluentbit) error {
-	err := configure(ctx, fbit, plug)
-	if err != nil {
-		return err
+	creds := credentials.NewTLS(tlsConfig)
+	if cfg.ServerTLS.Insecure {
+		creds = insecure.NewCredentials()
 	}
 
-	jaegerRemoteSampler := newSampler(plug)
-	tp, err := newTraceProvider(ctx, plug, jaegerRemoteSampler)
-	if err != nil {
-		return err
+	var dialOpts []grpc.DialOption
+	dialOpts = append(dialOpts, grpc.WithTransportCredentials(creds))
+
+	if cfg.ServerKeepalive != nil {
+		dialOpts = append(dialOpts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time: cfg.ServerKeepalive.Time, Timeout: cfg.ServerKeepalive.Timeout, PermitWithoutStream: cfg.ServerKeepalive.PermitWithoutStream,
+		}))
+	}
+	if len(cfg.ServerHeaders) > 0 {
+		dialOpts = append(dialOpts, grpc.WithUnaryInterceptor(func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			return invoker(metadata.NewOutgoingContext(ctx, metadata.New(cfg.ServerHeaders)), method, req, reply, cc, opts...)
+		}))
 	}
 
-	go func() {
-		ticker := time.Tick(plug.rate)
-		for {
-			<-ticker
-			plug.log.Debug("[jaeger_remote] jeager sampling is alive %v", time.Now())
-		}
-	}()
+	conn, err := grpc.DialContext(ctx, cfg.ServerEndpoint, dialOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("grpc dial to jaeger collector failed: %w", err)
+	}
 
-	defer func() {
-		if err := tp.Shutdown(ctx); err != nil {
-			panic(err)
-		}
-	}()
-
-	return nil
+	client := api_v2.NewSamplingManagerClient(conn)
+	return &remoteSampler{conn: conn, client: client}, nil
 }
 
 func main() {
