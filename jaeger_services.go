@@ -66,22 +66,16 @@ func (plug *jaegerRemotePlugin) initClient(ctx context.Context) error {
 	return nil
 }
 
-//
 // --- Server Mode Initialization ---
-//
-
 func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 	plug.log.Info("initializing server mode...")
-
 	plug.server = &serverComponent{}
-	sampler, err := newRemoteSampler(ctx, plug.config)
+	sampler, err := plug.newSamplerFn(ctx, plug.config)
 	if err != nil {
 		return fmt.Errorf("could not create remote sampler for server: %w", err)
 	}
 	plug.server.sampler = sampler
 	plug.server.cache = &samplingStrategyCache{strategies: make(map[string]*api_v2.SamplingStrategyResponse)}
-
-	go plug.pollStrategiesWithRetry(ctx)
 
 	if plug.config.ServerHttpListenAddr != "" {
 		plug.server.httpServer = plug.startHttpServer()
@@ -93,7 +87,7 @@ func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 			if plug.server.httpServer != nil {
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 				defer cancel()
-				plug.server.httpServer.Shutdown(shutdownCtx)
+				_ = plug.server.httpServer.Shutdown(shutdownCtx)
 			}
 			return err
 		}
@@ -103,6 +97,8 @@ func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 		return errors.New("server mode is enabled, but neither 'server.http.listen_addr' nor 'server.grpc.listen_addr' are configured")
 	}
 
+	// All checks passed, now start background goroutines.
+	go plug.pollStrategiesWithRetry(ctx)
 	go func() {
 		<-ctx.Done()
 		plug.log.Info("shutting down server components...")
@@ -111,7 +107,7 @@ func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 			plug.log.Info("gRPC server stopped.")
 		}
 		if sampler.conn != nil {
-			sampler.conn.Close()
+			_ = sampler.conn.Close()
 			plug.log.Info("gRPC client connection to Jaeger Collector closed.")
 		}
 		if plug.server.httpServer != nil {

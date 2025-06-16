@@ -34,6 +34,9 @@ type jaegerRemotePlugin struct {
 	config       *Config
 	server       *serverComponent // Server-related state
 	clientTracer *clientComponent // Client-related state
+
+	// newSamplerFn allows injecting a mock sampler factory for testing.
+	newSamplerFn func(context.Context, *Config) (*remoteSampler, error)
 }
 
 type serverComponent struct {
@@ -103,20 +106,21 @@ func (plug *jaegerRemotePlugin) Init(ctx context.Context, fbit *plugin.Fluentbit
 	}
 	plug.config = cfg
 
-	// Run client mode
+	// Default to the real sampler factory if none is injected for tests.
+	if plug.newSamplerFn == nil {
+		plug.newSamplerFn = newRemoteSampler
+	}
+
 	if cfg.Mode == "client" || cfg.Mode == "all" {
 		if err := plug.initClient(ctx); err != nil {
 			return fmt.Errorf("failed to initialize client mode: %w", err)
 		}
 	}
-
-	// Run server mode
 	if cfg.Mode == "server" || cfg.Mode == "all" {
 		if err := plug.initServer(ctx); err != nil {
 			return fmt.Errorf("failed to initialize server mode: %w", err)
 		}
 	}
-
 	plug.log.Info("plugin initialized successfully in mode: '%s'", cfg.Mode)
 	return nil
 }
