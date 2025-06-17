@@ -80,6 +80,7 @@ type KeepaliveConfig struct {
 }
 type RetryConfig struct {
 	InitialInterval, MaxInterval time.Duration
+	MaxRetry                     int64
 	Multiplier                   float64
 }
 type TLSSettings struct {

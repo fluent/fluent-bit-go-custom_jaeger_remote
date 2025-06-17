@@ -143,6 +143,7 @@ This mode enables both client and server functionalities simultaneously.
 | `server.retry.initial_interval`          | `server`/`all`  | The initial time to wait before retrying a failed connection to the Jaeger Collector.                   | `5s`                     |
 | `server.retry.max_interval`              | `server`/`all`  | The maximum time to wait between retries.                                                               | `5m`                     |
 | `server.retry.multiplier`                | `server`/`all`  | The factor by which the retry interval is multiplied after each failed attempt. Must be > 1.0.            | `1.5`                    |
+| `server.retry.max_retry`                 | `server`/`all`  | The factor by which the maximum retries after each failed attempt. Must be > 1.0.            | `10`                    |
 
 ## Run
 

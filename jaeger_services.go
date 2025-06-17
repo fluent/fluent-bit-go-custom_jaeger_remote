@@ -165,8 +165,45 @@ func (plug *jaegerRemotePlugin) getAndCacheStrategy(ctx context.Context, service
 	}
 
 	plug.log.Info("cache miss or expired for service '%s', fetching from remote...", serviceName)
+	var grpcResp *api_v2.SamplingStrategyResponse
+	var err error
 
-	grpcResp, err := plug.server.sampler.client.GetSamplingStrategy(ctx, &api_v2.SamplingStrategyParameters{ServiceName: serviceName})
+	if plug.config.ServerRetry != nil {
+		cfg := plug.config.ServerRetry
+		currentInterval := cfg.InitialInterval
+
+		for i := 0; i < int(cfg.MaxRetry); i++ {
+			grpcResp, err = plug.server.sampler.client.GetSamplingStrategy(ctx, &api_v2.SamplingStrategyParameters{ServiceName: serviceName})
+			if err == nil {
+				break
+			}
+
+			if i == int(cfg.MaxRetry)-1 {
+				break
+			}
+
+			plug.log.Warn("fetch attempt %d failed for '%s', retrying in %v. error: %v", i+1, serviceName, currentInterval, err)
+
+			select {
+			case <-time.After(currentInterval):
+			case <-ctx.Done():
+				plug.log.Warn("retry cancelled for service '%s' because context was done.", serviceName)
+				return nil, ctx.Err()
+			}
+
+			nextInterval := time.Duration(float64(currentInterval) * cfg.Multiplier)
+
+			if nextInterval > cfg.MaxInterval {
+				plug.log.Debug("backoff interval capped by max_interval. using %v instead of %v", cfg.MaxInterval, nextInterval)
+				currentInterval = cfg.MaxInterval
+			} else {
+				currentInterval = nextInterval
+			}
+		}
+	} else {
+		grpcResp, err = plug.server.sampler.client.GetSamplingStrategy(ctx, &api_v2.SamplingStrategyParameters{ServiceName: serviceName})
+	}
+
 	if err != nil {
 		if exists {
 			plug.log.Warn("failed to fetch new strategy for service '%s', returning stale data. error: %v", serviceName, err)

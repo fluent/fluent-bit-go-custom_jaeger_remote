@@ -170,6 +170,22 @@ func loadConfig(fbit *plugin.Fluentbit) (*Config, error) {
 			} else {
 				cfg.ServerRetry.MaxInterval = 5 * time.Minute
 			}
+
+			if valStr := fbit.Conf.String("server.retry.max_retry"); valStr != "" {
+				val, err := strconv.ParseInt(valStr, 10, 0)
+				if err != nil {
+					log.Warn("could not parse 'server.retry.max_retry', using default of 5m. error: %v", err)
+					cfg.ServerRetry.MaxRetry = 10
+				} else {
+					cfg.ServerRetry.MaxRetry = val
+				}
+			} else {
+				cfg.ServerRetry.MaxRetry = 10
+			}
+			if cfg.ServerRetry.MaxRetry <= 0 {
+				log.Warn("'server.retry.multiplier' must be > 0, using default of 10")
+				cfg.ServerRetry.MaxRetry = 10
+			}
 			if valStr := fbit.Conf.String("server.retry.multiplier"); valStr != "" {
 				val, err := strconv.ParseFloat(valStr, 64)
 				if err != nil {
