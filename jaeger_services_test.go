@@ -280,6 +280,104 @@ func Test_InitServer_Failure(t *testing.T) {
 	})
 }
 
+func Test_corsMiddleware(t *testing.T) {
+	dummyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	plug := &jaegerRemotePlugin{
+		log: newTestLogger(t),
+		config: &Config{
+			ServerCors: CorsSettings{
+				AllowedOrigins: []string{"http://localhost:3000"},
+			},
+		},
+	}
+	testHandler := plug.corsMiddleware(dummyHandler) //
+
+	t.Run("GET request from allowed origin", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/sampling", nil)
+		req.Header.Set("Origin", "http://localhost:3000")
+		rr := httptest.NewRecorder()
+
+		testHandler.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "http://localhost:3000", rr.Header().Get("Access-Control-Allow-Origin"))
+	})
+
+	t.Run("pre-flight OPTIONS request from allowed origin", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodOptions, "/sampling", nil)
+		req.Header.Set("Origin", "http://localhost:3000")
+		rr := httptest.NewRecorder()
+
+		testHandler.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusNoContent, rr.Code)
+		assert.Equal(t, "http://localhost:3000", rr.Header().Get("Access-Control-Allow-Origin"))
+	})
+
+	t.Run("GET request from disallowed origin", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/sampling", nil)
+		req.Header.Set("Origin", "https://evil-site.com")
+		rr := httptest.NewRecorder()
+
+		testHandler.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "", rr.Header().Get("Access-Control-Allow-Origin"))
+	})
+
+	t.Run("pre-flight OPTIONS request from disallowed origin", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodOptions, "/sampling", nil)
+		req.Header.Set("Origin", "https://evil-site.com")
+		rr := httptest.NewRecorder()
+
+		testHandler.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusForbidden, rr.Code)
+	})
+
+	t.Run("request without CORS config should pass through", func(t *testing.T) {
+		plugWithoutCors := &jaegerRemotePlugin{
+			log:    newTestLogger(t),
+			config: &Config{},
+		}
+		handlerWithoutCors := plugWithoutCors.corsMiddleware(dummyHandler)
+
+		req := httptest.NewRequest(http.MethodGet, "/sampling", nil)
+		req.Header.Set("Origin", "http://localhost:3000")
+		rr := httptest.NewRecorder()
+
+		handlerWithoutCors.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "", rr.Header().Get("Access-Control-Allow-Origin"))
+	})
+
+	t.Run("wildcard origin allows any origin", func(t *testing.T) {
+		plugWithWildcard := &jaegerRemotePlugin{
+			log: newTestLogger(t),
+			config: &Config{
+				ServerCors: CorsSettings{
+					AllowedOrigins: []string{"*"},
+				},
+			},
+		}
+		handlerWithWildcard := plugWithWildcard.corsMiddleware(dummyHandler)
+
+		req := httptest.NewRequest(http.MethodGet, "/sampling", nil)
+		req.Header.Set("Origin", "https://any-site.com")
+		rr := httptest.NewRecorder()
+
+		handlerWithWildcard.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "https://any-site.com", rr.Header().Get("Access-Control-Allow-Origin"))
+	})
+}
+
 func Test_ServerHandlers(t *testing.T) {
 	mockJaeger := &samplingServer{
 		err: status.Error(codes.NotFound, "strategy not found for service"),

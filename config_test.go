@@ -129,6 +129,66 @@ func Test_loadConfig_ModeServer(t *testing.T) {
 	})
 }
 
+func Test_loadConfig_CORS(t *testing.T) {
+	testCases := []struct {
+		name            string
+		inputConf       map[string]string
+		expectedOrigins []string
+	}{
+		{
+			name: "multiple origins with spaces",
+			inputConf: map[string]string{
+				"server.cors.allowed_origins": "http://localhost:3000, https://my-app.com",
+			},
+			expectedOrigins: []string{"http://localhost:3000", "https://my-app.com"},
+		},
+		{
+			name: "single origin",
+			inputConf: map[string]string{
+				"server.cors.allowed_origins": "https://my-app.com",
+			},
+			expectedOrigins: []string{"https://my-app.com"},
+		},
+		{
+			name: "wildcard origin",
+			inputConf: map[string]string{
+				"server.cors.allowed_origins": "*",
+			},
+			expectedOrigins: []string{"*"},
+		},
+		{
+			name:            "config key not present",
+			inputConf:       map[string]string{}, // The key is missing entirely
+			expectedOrigins: nil,                 // Expect a nil slice, not an empty one
+		},
+		{
+			name: "config key is an empty string",
+			inputConf: map[string]string{
+				"server.cors.allowed_origins": "",
+			},
+			expectedOrigins: nil,
+		},
+		{
+			name: "malformed string with extra spaces and commas",
+			inputConf: map[string]string{
+				"server.cors.allowed_origins": "  http://a.com, ,https://b.com  ,",
+			},
+			expectedOrigins: []string{"http://a.com", "https://b.com"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{}
+			conf := mapConfigLoader(tc.inputConf)
+
+			parseCorsConfig(cfg, conf)
+
+			assert.Equal(t, tc.expectedOrigins, cfg.ServerCors.AllowedOrigins)
+		})
+	}
+}
+
 func Test_loadConfig_Server_Defaults(t *testing.T) {
 	t.Run("server mode applies defaults for retry and keepalive", func(t *testing.T) {
 		fbit := &plugin.Fluentbit{

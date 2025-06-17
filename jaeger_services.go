@@ -212,11 +212,50 @@ func (plug *jaegerRemotePlugin) loadStrategiesFromFile() error {
 	return nil
 }
 
+func (plug *jaegerRemotePlugin) corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(plug.config.ServerCors.AllowedOrigins) == 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		origin := r.Header.Get("Origin")
+		isAllowed := false
+		for _, allowed := range plug.config.ServerCors.AllowedOrigins {
+			if allowed == "*" || allowed == origin {
+				isAllowed = true
+				break
+			}
+		}
+
+		if isAllowed {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		}
+
+		// Handle pre-flight OPTIONS request
+		if r.Method == "OPTIONS" {
+			if isAllowed {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			// If not an allowed origin, forbid the request.
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+
+		// Serve the actual request for GET, etc.
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (plug *jaegerRemotePlugin) startHttpServer() *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sampling", plug.handleSampling)
 	mux.HandleFunc("/strategies", plug.handleGetStrategies)
-	server := &http.Server{Addr: plug.config.ServerHttpListenAddr, Handler: mux}
+
+	server := &http.Server{Addr: plug.config.ServerHttpListenAddr, Handler: plug.corsMiddleware(mux)} //
 	go func() {
 		if err := server.ListenAndServe(); err != http.ErrServerClosed {
 			plug.log.Error("HTTP server error: %v", err)

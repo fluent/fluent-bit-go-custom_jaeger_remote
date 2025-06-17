@@ -50,6 +50,10 @@ type clientComponent struct {
 	tracerProvider *sdktrace.TracerProvider
 }
 
+type CorsSettings struct {
+	AllowedOrigins []string
+}
+
 type Config struct {
 	Mode    string // "client", "server", or "all"
 	Headers map[string]string
@@ -61,6 +65,7 @@ type Config struct {
 	ServerStrategyFile   string
 	ServerHttpListenAddr string
 	ServerGrpcListenAddr string
+	ServerCors           CorsSettings
 	ServerServiceNames   []string
 	ServerTLS            TLSSettings
 	ServerHeaders        map[string]string

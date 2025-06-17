@@ -33,6 +33,22 @@ func loadTLSConfig(cfg TLSSettings) (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
+func parseCorsConfig(cfg *Config, conf plugin.ConfigLoader) (*Config, error) {
+	if cfg == nil {
+		return nil, errors.New("cfg must not nil")
+	}
+	if corsStr := conf.String("server.cors.allowed_origins"); corsStr != "" {
+		for _, origin := range strings.Split(corsStr, ",") {
+			trimmedOrigin := strings.TrimSpace(origin)
+			if trimmedOrigin != "" { // Only append non-empty origins
+				cfg.ServerCors.AllowedOrigins = append(cfg.ServerCors.AllowedOrigins, trimmedOrigin)
+			}
+		}
+	}
+
+	return cfg, nil
+}
+
 func loadConfig(fbit *plugin.Fluentbit) (*Config, error) {
 	log := fbit.Logger
 	cfg := &Config{
@@ -45,6 +61,12 @@ func loadConfig(fbit *plugin.Fluentbit) (*Config, error) {
 		ServerGrpcListenAddr: fbit.Conf.String("server.grpc.listen_addr"),
 		ServerHeaders:        parseHeaders(fbit.Conf.String("server.headers")),
 	}
+
+	cfg, err := parseCorsConfig(cfg, fbit.Conf)
+	if err != nil {
+		return nil, err
+	}
+
 	if cfg.Mode == "" {
 		cfg.Mode = "all"
 	}
