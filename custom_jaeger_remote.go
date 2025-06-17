@@ -66,6 +66,7 @@ type Config struct {
 	ServerHeaders        map[string]string
 	ServerKeepalive      *KeepaliveConfig
 	ServerRetry          *RetryConfig
+	ServerReloadInterval time.Duration
 }
 
 type KeepaliveConfig struct {
@@ -84,14 +85,18 @@ type remoteSampler struct {
 	client api_v2.SamplingManagerClient
 	conn   *grpc.ClientConn
 }
+type cacheEntry struct {
+	strategy   *api_v2.SamplingStrategyResponse
+	expires_at time.Time
+}
+
 type samplingStrategyCache struct {
 	sync.RWMutex
-	strategies map[string]*api_v2.SamplingStrategyResponse
+	strategies map[string]*cacheEntry
 }
 type grpcApiServer struct {
 	api_v2.UnimplementedSamplingManagerServer
-	cache *samplingStrategyCache
-	log   plugin.Logger
+	plug *jaegerRemotePlugin
 }
 
 //

@@ -17,8 +17,10 @@ import (
 	"github.com/calyptia/plugin"
 	api_v2 "github.com/jaegertracing/jaeger-idl/proto-gen/api_v2"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -32,12 +34,17 @@ type samplingServer struct {
 	mu            sync.Mutex
 	observedCalls []observedCall
 	strategy      *api_v2.SamplingStrategyResponse
+	err           error
 }
 
 func (s *samplingServer) GetSamplingStrategy(ctx context.Context, params *api_v2.SamplingStrategyParameters) (*api_v2.SamplingStrategyResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.observedCalls = append(s.observedCalls, observedCall{Context: ctx, Params: params})
+
+	if s.err != nil {
+		return nil, s.err
+	}
 	return s.strategy, nil
 }
 
@@ -84,7 +91,6 @@ func Test_InitServer_FileStrategy(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		// CORRECTED: Use integer values for strategyType to match the Go struct definition.
 		strategyJSON := `{
 			"service-a": {
 				"strategyType": 0,
@@ -121,7 +127,6 @@ func Test_InitServer_FileStrategy(t *testing.T) {
 		assert.NotZero(t, plug.server.cache)
 		assert.Equal(t, 2, len(plug.server.cache.strategies))
 
-		// Verify HTTP endpoint serves the file content
 		req := httptest.NewRequest(http.MethodGet, "/sampling?service=service-a", nil)
 		rr := httptest.NewRecorder()
 		plug.handleSampling(rr, req)
@@ -193,12 +198,14 @@ func Test_InitServer_EndToEnd(t *testing.T) {
 			upstreamJaegerServer, lis := startMockGrpcServer(t, mockJaeger)
 			defer upstreamJaegerServer.Stop()
 
+			httpListenAddr := getFreePort(t)
+
 			fbit := &plugin.Fluentbit{
 				Logger: newTestLogger(t),
 				Conf: mapConfigLoader{
 					"mode":                          "server",
 					"server.endpoint":               "bufnet",
-					"server.http.listen_addr":       getFreePort(t),
+					"server.http.listen_addr":       httpListenAddr,
 					"server.service_names":          "test-service",
 					"server.retry.initial_interval": "10ms",
 					"server.headers":                tc.configHeaders,
@@ -231,16 +238,13 @@ func Test_InitServer_EndToEnd(t *testing.T) {
 				defer plug.server.httpServer.Close()
 			}
 
-			var success bool
-			for i := 0; i < 20; i++ { // Poll for up to 200ms
-				if mockJaeger.callCount() >= 1 {
-					success = true
-					break
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
-			assert.True(t, success, "poller should have called GetSamplingStrategy at least once")
+			_, err = http.Get(fmt.Sprintf("http://%s/sampling?service=test-service", httpListenAddr))
+			assert.NoError(t, err)
 
+			// The assertion now checks if the call was made after the HTTP request.
+			// A small delay might be needed for the async call to register.
+			time.Sleep(20 * time.Millisecond)
+			assert.NotZero(t, mockJaeger.callCount(), 0, "on-demand fetch should have called GetSamplingStrategy")
 			lastCall, ok := mockJaeger.lastCall()
 			assert.True(t, ok, "expected at least one call to have been observed")
 			assert.Equal(t, "test-service", lastCall.Params.ServiceName)
@@ -277,27 +281,49 @@ func Test_InitServer_Failure(t *testing.T) {
 }
 
 func Test_ServerHandlers(t *testing.T) {
+	mockJaeger := &samplingServer{
+		err: status.Error(codes.NotFound, "strategy not found for service"),
+	}
+	upstreamJaegerServer, lis := startMockGrpcServer(t, mockJaeger)
+	defer upstreamJaegerServer.Stop()
+
+	conn, err := grpc.DialContext(context.Background(), "bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	assert.NoError(t, err)
+	defer conn.Close()
+	mockSampler := &remoteSampler{
+		client: api_v2.NewSamplingManagerClient(conn),
+		conn:   conn,
+	}
+
 	plug := &jaegerRemotePlugin{
-		log: newTestLogger(t),
+		log:    newTestLogger(t),
+		config: &Config{ServerReloadInterval: 5 * time.Minute},
 		server: &serverComponent{
 			cache: &samplingStrategyCache{
-				strategies: make(map[string]*api_v2.SamplingStrategyResponse),
+				strategies: make(map[string]*cacheEntry),
 			},
+			sampler: mockSampler,
 		},
 	}
 
-	// Manually populate the cache for the test
 	testStrategy := &api_v2.SamplingStrategyResponse{
 		StrategyType:          api_v2.SamplingStrategyType_PROBABILISTIC,
 		ProbabilisticSampling: &api_v2.ProbabilisticSamplingStrategy{SamplingRate: 0.99},
 	}
-	plug.server.cache.strategies["test-service"] = testStrategy
+	plug.server.cache.strategies["test-service"] = &cacheEntry{
+		strategy:   testStrategy,
+		expires_at: time.Now().Add(1 * time.Minute),
+	}
 
 	t.Run("HTTP handler returns correct strategy for existing service", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/sampling?service=test-service", nil)
 		rr := httptest.NewRecorder()
 
-		plug.handleSampling(rr, req)
+		s := &grpcApiServer{plug: plug}
+		s.plug.handleSampling(rr, req)
 
 		assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -311,7 +337,8 @@ func Test_ServerHandlers(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/sampling?service=unknown-service", nil)
 		rr := httptest.NewRecorder()
 
-		plug.handleSampling(rr, req)
+		s := &grpcApiServer{plug: plug}
+		s.plug.handleSampling(rr, req)
 
 		assert.Equal(t, http.StatusNotFound, rr.Code)
 	})

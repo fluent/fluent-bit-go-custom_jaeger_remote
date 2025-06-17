@@ -68,6 +68,18 @@ func loadConfig(fbit *plugin.Fluentbit) (*Config, error) {
 
 		// Remote-only server settings
 		if cfg.ServerEndpoint != "" {
+			if valStr := fbit.Conf.String("server.reload_interval"); valStr != "" {
+				val, err := time.ParseDuration(valStr)
+				if err != nil {
+					log.Warn("could not parse 'server.reload_interval', using default of 5m. error: %v", err)
+					cfg.ServerReloadInterval = 5 * time.Minute
+				} else {
+					cfg.ServerReloadInterval = val
+				}
+			} else {
+				cfg.ServerReloadInterval = 5 * time.Minute // Default TTL
+			}
+
 			cfg.ServerTLS = TLSSettings{
 				ServerName: fbit.Conf.String("server.tls.server_name_override"),
 				CAFile:     fbit.Conf.String("server.tls.ca_file"),

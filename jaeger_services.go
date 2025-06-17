@@ -71,7 +71,9 @@ func (plug *jaegerRemotePlugin) initClient(ctx context.Context) error {
 func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 	plug.log.Info("initializing server mode...")
 	plug.server = &serverComponent{}
-	plug.server.cache = &samplingStrategyCache{strategies: make(map[string]*api_v2.SamplingStrategyResponse)}
+	plug.server.cache = &samplingStrategyCache{
+		strategies: make(map[string]*cacheEntry),
+	}
 
 	// Determine strategy source: remote or file
 	if plug.config.ServerStrategyFile != "" {
@@ -108,10 +110,6 @@ func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 		return errors.New("server mode is enabled, but neither 'server.http.listen_addr' nor 'server.grpc.listen_addr' are configured")
 	}
 
-	// All checks passed, set up cleanup goroutine.
-	if plug.config.ServerEndpoint != "" {
-		go plug.pollStrategiesWithRetry(ctx)
-	}
 	go func() {
 		<-ctx.Done()
 		plug.log.Info("shutting down server components...")
@@ -148,35 +146,43 @@ func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 // --- Background Services (Polling, HTTP, gRPC) ---
 //
 
-func (plug *jaegerRemotePlugin) pollStrategiesWithRetry(ctx context.Context) {
-	cfg := plug.config
-	if cfg.ServerRetry == nil {
-		plug.log.Error("retry configuration is missing, poller will not start")
-		return
+func (plug *jaegerRemotePlugin) getAndCacheStrategy(ctx context.Context, serviceName string) (*api_v2.SamplingStrategyResponse, error) {
+	plug.server.cache.RLock()
+	entry, exists := plug.server.cache.strategies[serviceName]
+	if exists && time.Now().Before(entry.expires_at) {
+		plug.server.cache.RUnlock()
+		plug.log.Debug("cache hit for service: %s", serviceName)
+		return entry.strategy, nil
 	}
-	initialInterval, maxInterval, multiplier := cfg.ServerRetry.InitialInterval, cfg.ServerRetry.MaxInterval, cfg.ServerRetry.Multiplier
-	currentInterval := initialInterval
-	timer := time.NewTimer(currentInterval)
-	defer timer.Stop()
+	plug.server.cache.RUnlock()
 
-	for {
-		select {
-		case <-timer.C:
-			if err := plug.updateCache(ctx); err != nil {
-				plug.log.Error("failed to update cache, scheduling retry in %v: %v", currentInterval, err)
-				currentInterval = time.Duration(float64(currentInterval) * multiplier)
-				if currentInterval > maxInterval {
-					currentInterval = maxInterval
-				}
-			} else {
-				currentInterval = initialInterval
-			}
-			timer.Reset(currentInterval)
-		case <-ctx.Done():
-			plug.log.Info("poller stopped.")
-			return
-		}
+	plug.server.cache.Lock()
+	defer plug.server.cache.Unlock()
+
+	entry, exists = plug.server.cache.strategies[serviceName]
+	if exists && time.Now().Before(entry.expires_at) {
+		return entry.strategy, nil
 	}
+
+	plug.log.Info("cache miss or expired for service '%s', fetching from remote...", serviceName)
+
+	grpcResp, err := plug.server.sampler.client.GetSamplingStrategy(ctx, &api_v2.SamplingStrategyParameters{ServiceName: serviceName})
+	if err != nil {
+		if exists {
+			plug.log.Warn("failed to fetch new strategy for service '%s', returning stale data. error: %v", serviceName, err)
+			return entry.strategy, nil
+		}
+		return nil, fmt.Errorf("failed to fetch strategy for service %s: %w", serviceName, err)
+	}
+
+	newEntry := &cacheEntry{
+		strategy:   grpcResp,
+		expires_at: time.Now().Add(plug.config.ServerReloadInterval),
+	}
+	plug.server.cache.strategies[serviceName] = newEntry
+	plug.log.Info("cache updated for service '%s' with TTL %v", serviceName, plug.config.ServerReloadInterval)
+
+	return newEntry.strategy, nil
 }
 
 func (plug *jaegerRemotePlugin) loadStrategiesFromFile() error {
@@ -185,14 +191,24 @@ func (plug *jaegerRemotePlugin) loadStrategiesFromFile() error {
 	if err != nil {
 		return fmt.Errorf("could not read strategy file: %w", err)
 	}
-	var strategies map[string]*api_v2.SamplingStrategyResponse
-	if err := json.Unmarshal(data, &strategies); err != nil {
-		return fmt.Errorf("could not unmarshal strategy file as a map of service strategies: %w", err)
+
+	var strategiesFromFile map[string]*api_v2.SamplingStrategyResponse
+	if err := json.Unmarshal(data, &strategiesFromFile); err != nil {
+		return fmt.Errorf("could not unmarshal strategy file: %w", err)
 	}
+
 	plug.server.cache.Lock()
-	plug.server.cache.strategies = strategies
-	plug.server.cache.Unlock()
-	plug.log.Info("successfully loaded %d strategies from file", len(strategies))
+	defer plug.server.cache.Unlock()
+
+	longTTL := 24 * 365 * 10 * time.Hour // 10 years
+	for serviceName, strategy := range strategiesFromFile {
+		plug.server.cache.strategies[serviceName] = &cacheEntry{
+			strategy:   strategy,
+			expires_at: time.Now().Add(longTTL),
+		}
+	}
+
+	plug.log.Info("successfully loaded %d strategies from file", len(strategiesFromFile))
 	return nil
 }
 
@@ -206,7 +222,10 @@ func (plug *jaegerRemotePlugin) updateCache(ctx context.Context) error {
 			continue
 		}
 		plug.server.cache.Lock()
-		plug.server.cache.strategies[svcName] = grpcResp
+		plug.server.cache.strategies[svcName] = &cacheEntry{
+			strategy:   grpcResp,
+			expires_at: time.Now().Add(plug.config.ServerReloadInterval),
+		}
 		plug.server.cache.Unlock()
 	}
 	return lastErr
@@ -231,7 +250,8 @@ func (plug *jaegerRemotePlugin) startGrpcServer() (*grpc.Server, error) {
 		return nil, fmt.Errorf("failed to listen on %s: %w", plug.config.ServerGrpcListenAddr, err)
 	}
 	s := grpc.NewServer()
-	api_v2.RegisterSamplingManagerServer(s, &grpcApiServer{cache: plug.server.cache, log: plug.log})
+	// Pass the entire plugin to the grpcApiServer
+	api_v2.RegisterSamplingManagerServer(s, &grpcApiServer{plug: plug})
 	reflection.Register(s)
 	go func() {
 		if err := s.Serve(lis); err != nil {
@@ -240,19 +260,20 @@ func (plug *jaegerRemotePlugin) startGrpcServer() (*grpc.Server, error) {
 	}()
 	return s, nil
 }
-
 func (s *grpcApiServer) GetSamplingStrategy(ctx context.Context, params *api_v2.SamplingStrategyParameters) (*api_v2.SamplingStrategyResponse, error) {
 	serviceName := params.GetServiceName()
 	if serviceName == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "service_name is required")
 	}
-	s.log.Debug("gRPC request for sampling strategy received for service: %s", serviceName)
-	s.cache.RLock()
-	strategy, exists := s.cache.strategies[serviceName]
-	s.cache.RUnlock()
-	if !exists {
-		return nil, status.Errorf(codes.NotFound, "no strategy found for service: %s", serviceName)
+
+	s.plug.log.Debug("gRPC request for sampling strategy received for service: %s", serviceName)
+
+	strategy, err := s.plug.getAndCacheStrategy(ctx, serviceName)
+	if err != nil {
+		// Return an appropriate gRPC error
+		return nil, status.Errorf(codes.NotFound, "strategy not found for service %s: %v", serviceName, err)
 	}
+
 	return strategy, nil
 }
 
@@ -262,13 +283,14 @@ func (plug *jaegerRemotePlugin) handleSampling(w http.ResponseWriter, r *http.Re
 		http.Error(w, "query parameter 'service' is required", http.StatusBadRequest)
 		return
 	}
-	plug.server.cache.RLock()
-	strategy, exists := plug.server.cache.strategies[serviceName]
-	plug.server.cache.RUnlock()
-	if !exists {
-		http.Error(w, fmt.Sprintf(`{"error": "strategy not found for service %s"}`, serviceName), http.StatusNotFound)
+
+	strategy, err := plug.getAndCacheStrategy(r.Context(), serviceName)
+	if err != nil {
+		// This uses the status codes from the grpc-go library to map gRPC errors to HTTP status codes.
+		http.Error(w, fmt.Sprintf(`{"error": "strategy not found for service %s: %v"}`, serviceName, err), http.StatusNotFound)
 		return
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(strategy)
 }
