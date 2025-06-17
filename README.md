@@ -78,6 +78,21 @@ In this mode, the plugin polls a Jaeger Collector for strategies and serves them
     server.keepalive.time         30s
 ```
 
+### Mode: server (Local File)
+
+This mode loads a static strategy file and serves it via HTTP and/or gRPC. It does not connect to a remote Jaeger Collector.
+
+```
+[CUSTOM]
+    Name                   jaeger_remote
+    Mode                   server
+
+    # --- Local Strategy File ---
+    server.strategy_file   /path/to/my_strategies.json
+
+    # --- Exposed Endpoints ---
+    server.http.listen_addr  0.0.0.0:8899
+```
 
 ### Mode: All
 
@@ -108,7 +123,8 @@ This mode enables both client and server functionalities simultaneously.
 | `client.server_url`                      | `client`/`all`  | The endpoint URL of the OTLP collector to which traces will be sent.                                      | **Required** |
 | `client.sampling_url`                    | `client`/`all`  | The URL of the Jaeger-compatible sampling server to poll for strategies.                                | **Required** |
 | **Server Settings** |               |                                                                                                         |                          |
-| `server.endpoint`                        | `server`/`all`  | The gRPC endpoint of the Jaeger Collector to poll for sampling strategies.                              | **Required** |
+| `server.endpoint`                        | `server`/`all`  | The gRPC endpoint of the Jaeger Collector to poll for sampling strategies. **Mutually exclusive** with server.strategy_file. | **Required** |
+{ `server.strategy_file`                   | `server`/`all`  | Path to a local JSON file containing sampling strategies. **Mutually exclusive** with `server.endpoint`.    | ` ` (Disabled)           |
 | `server.service_names`                   | `server`/`all`  | A comma-separated list of service names to fetch strategies for.                                        | **Required** |
 | `server.http.listen_addr`                | `server`/`all`  | The address and port for the internal HTTP server to listen on. If empty, the HTTP server is disabled.    | ` ` (Disabled)           |
 | `server.grpc.listen_addr`                | `server`/`all`  | The address and port for the internal gRPC server to listen on. If empty, the gRPC server is disabled.   | ` ` (Disabled)           |
