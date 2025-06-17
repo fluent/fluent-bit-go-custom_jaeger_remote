@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -76,6 +77,61 @@ func startMockHTTPSamplingServer(t *testing.T, strategy *api_v2.SamplingStrategy
 		err := json.NewEncoder(w).Encode(strategy)
 		assert.NoError(t, err)
 	}))
+}
+
+func Test_InitServer_FileStrategy(t *testing.T) {
+	t.Run("successfully initializes server using a strategy file", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		// CORRECTED: Use integer values for strategyType to match the Go struct definition.
+		strategyJSON := `{
+			"service-a": {
+				"strategyType": 0,
+				"probabilisticSampling": { "samplingRate": 0.5 }
+			},
+			"service-b": {
+				"strategyType": 1,
+				"rateLimitingSampling": { "maxTracesPerSecond": 10 }
+			}
+		}`
+		tmpFile, err := os.CreateTemp("", "strategy-*.json")
+		assert.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write([]byte(strategyJSON))
+		assert.NoError(t, err)
+		err = tmpFile.Close()
+		assert.NoError(t, err)
+
+		fbit := &plugin.Fluentbit{
+			Logger: newTestLogger(t),
+			Conf: mapConfigLoader{
+				"mode":                    "server",
+				"server.strategy_file":    tmpFile.Name(),
+				"server.http.listen_addr": getFreePort(t),
+			},
+		}
+		plug := &jaegerRemotePlugin{}
+		err = plug.Init(ctx, fbit)
+		assert.NoError(t, err)
+		assert.NotZero(t, plug.server)
+		assert.NotZero(t, plug.server.httpServer)
+		defer plug.server.httpServer.Close()
+
+		assert.NotZero(t, plug.server.cache)
+		assert.Equal(t, 2, len(plug.server.cache.strategies))
+
+		// Verify HTTP endpoint serves the file content
+		req := httptest.NewRequest(http.MethodGet, "/sampling?service=service-a", nil)
+		rr := httptest.NewRecorder()
+		plug.handleSampling(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+
+		var resp api_v2.SamplingStrategyResponse
+		err = json.NewDecoder(rr.Body).Decode(&resp)
+		assert.NoError(t, err)
+		assert.Equal(t, 0.5, resp.ProbabilisticSampling.GetSamplingRate())
+	})
 }
 
 func Test_InitClient(t *testing.T) {

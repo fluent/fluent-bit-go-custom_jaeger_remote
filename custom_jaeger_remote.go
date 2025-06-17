@@ -58,6 +58,7 @@ type Config struct {
 	ClientSamplingURL string
 	// Server-specific settings
 	ServerEndpoint       string
+	ServerStrategyFile   string
 	ServerHttpListenAddr string
 	ServerGrpcListenAddr string
 	ServerServiceNames   []string

@@ -40,6 +40,7 @@ func loadConfig(fbit *plugin.Fluentbit) (*Config, error) {
 		ClientServerURL:      fbit.Conf.String("client.server_url"),
 		ClientSamplingURL:    fbit.Conf.String("client.sampling_url"),
 		ServerEndpoint:       fbit.Conf.String("server.endpoint"),
+		ServerStrategyFile:   fbit.Conf.String("server.strategy_file"),
 		ServerHttpListenAddr: fbit.Conf.String("server.http.listen_addr"),
 		ServerGrpcListenAddr: fbit.Conf.String("server.grpc.listen_addr"),
 		ServerHeaders:        parseHeaders(fbit.Conf.String("server.headers")),
@@ -58,104 +59,106 @@ func loadConfig(fbit *plugin.Fluentbit) (*Config, error) {
 	}
 
 	if cfg.Mode == "server" || cfg.Mode == "all" {
-		cfg.ServerTLS = TLSSettings{
-			ServerName: fbit.Conf.String("server.tls.server_name_override"),
-			CAFile:     fbit.Conf.String("server.tls.ca_file"),
-			CertFile:   fbit.Conf.String("server.tls.cert_file"),
-			KeyFile:    fbit.Conf.String("server.tls.key_file"),
+		if cfg.ServerEndpoint == "" && cfg.ServerStrategyFile == "" {
+			return nil, errors.New("for server mode, either 'server.endpoint' or 'server.strategy_file' must be configured")
 		}
-		if insecureStr := fbit.Conf.String("server.tls.insecure"); insecureStr != "" {
-			cfg.ServerTLS.Insecure, _ = strconv.ParseBool(insecureStr)
+		if cfg.ServerEndpoint != "" && cfg.ServerStrategyFile != "" {
+			return nil, errors.New("'server.endpoint' and 'server.strategy_file' are mutually exclusive")
 		}
 
-		if kaTimeStr := fbit.Conf.String("server.keepalive.time"); kaTimeStr != "" {
-			cfg.ServerKeepalive = &KeepaliveConfig{}
-			kaTime, err := time.ParseDuration(kaTimeStr)
-			if err != nil {
-				log.Warn("could not parse 'server.keepalive.time', skipping keepalive config. error: %v", err)
-				cfg.ServerKeepalive = nil
-			} else {
-				cfg.ServerKeepalive.Time = kaTime
+		// Remote-only server settings
+		if cfg.ServerEndpoint != "" {
+			cfg.ServerTLS = TLSSettings{
+				ServerName: fbit.Conf.String("server.tls.server_name_override"),
+				CAFile:     fbit.Conf.String("server.tls.ca_file"),
+				CertFile:   fbit.Conf.String("server.tls.cert_file"),
+				KeyFile:    fbit.Conf.String("server.tls.key_file"),
+			}
+			if insecureStr := fbit.Conf.String("server.tls.insecure"); insecureStr != "" {
+				cfg.ServerTLS.Insecure, _ = strconv.ParseBool(insecureStr)
+			}
 
-				kaTimeoutStr := fbit.Conf.String("server.keepalive.timeout")
-				if kaTimeoutStr == "" {
-					cfg.ServerKeepalive.Timeout = 20 * time.Second // Default
+			if kaTimeStr := fbit.Conf.String("server.keepalive.time"); kaTimeStr != "" {
+				cfg.ServerKeepalive = &KeepaliveConfig{}
+				kaTime, err := time.ParseDuration(kaTimeStr)
+				if err != nil {
+					log.Warn("could not parse 'server.keepalive.time', skipping keepalive config. error: %v", err)
+					cfg.ServerKeepalive = nil
 				} else {
-					kaTimeout, err := time.ParseDuration(kaTimeoutStr)
-					if err != nil {
-						log.Warn("could not parse 'server.keepalive.timeout', using default of 20s. error: %v", err)
+					cfg.ServerKeepalive.Time = kaTime
+					kaTimeoutStr := fbit.Conf.String("server.keepalive.timeout")
+					if kaTimeoutStr == "" {
 						cfg.ServerKeepalive.Timeout = 20 * time.Second
 					} else {
-						cfg.ServerKeepalive.Timeout = kaTimeout
+						kaTimeout, err := time.ParseDuration(kaTimeoutStr)
+						if err != nil {
+							log.Warn("could not parse 'server.keepalive.timeout', using default of 20s. error: %v", err)
+							cfg.ServerKeepalive.Timeout = 20 * time.Second
+						} else {
+							cfg.ServerKeepalive.Timeout = kaTimeout
+						}
 					}
-				}
-
-				kaPermitStr := fbit.Conf.String("server.keepalive.permit_without_stream")
-				if kaPermitStr == "" {
-					cfg.ServerKeepalive.PermitWithoutStream = true // Default
-				} else {
-					kaPermit, err := strconv.ParseBool(kaPermitStr)
-					if err != nil {
-						log.Warn("could not parse 'server.keepalive.permit_without_stream', using default of true. error: %v", err)
+					kaPermitStr := fbit.Conf.String("server.keepalive.permit_without_stream")
+					if kaPermitStr == "" {
 						cfg.ServerKeepalive.PermitWithoutStream = true
 					} else {
-						cfg.ServerKeepalive.PermitWithoutStream = kaPermit
+						kaPermit, err := strconv.ParseBool(kaPermitStr)
+						if err != nil {
+							log.Warn("could not parse 'server.keepalive.permit_without_stream', using default of true. error: %v", err)
+							cfg.ServerKeepalive.PermitWithoutStream = true
+						} else {
+							cfg.ServerKeepalive.PermitWithoutStream = kaPermit
+						}
 					}
 				}
 			}
-		}
 
-		cfg.ServerRetry = &RetryConfig{}
-		if valStr := fbit.Conf.String("server.retry.initial_interval"); valStr != "" {
-			val, err := time.ParseDuration(valStr)
-			if err != nil {
-				log.Warn("could not parse 'server.retry.initial_interval', using default of 5s. error: %v", err)
+			cfg.ServerRetry = &RetryConfig{}
+			if valStr := fbit.Conf.String("server.retry.initial_interval"); valStr != "" {
+				val, err := time.ParseDuration(valStr)
+				if err != nil {
+					log.Warn("could not parse 'server.retry.initial_interval', using default of 5s. error: %v", err)
+					cfg.ServerRetry.InitialInterval = 5 * time.Second
+				} else {
+					cfg.ServerRetry.InitialInterval = val
+				}
+			} else {
 				cfg.ServerRetry.InitialInterval = 5 * time.Second
-			} else {
-				cfg.ServerRetry.InitialInterval = val
 			}
-		} else {
-			cfg.ServerRetry.InitialInterval = 5 * time.Second
-		}
-
-		if valStr := fbit.Conf.String("server.retry.max_interval"); valStr != "" {
-			val, err := time.ParseDuration(valStr)
-			if err != nil {
-				log.Warn("could not parse 'server.retry.max_interval', using default of 5m. error: %v", err)
+			if valStr := fbit.Conf.String("server.retry.max_interval"); valStr != "" {
+				val, err := time.ParseDuration(valStr)
+				if err != nil {
+					log.Warn("could not parse 'server.retry.max_interval', using default of 5m. error: %v", err)
+					cfg.ServerRetry.MaxInterval = 5 * time.Minute
+				} else {
+					cfg.ServerRetry.MaxInterval = val
+				}
+			} else {
 				cfg.ServerRetry.MaxInterval = 5 * time.Minute
-			} else {
-				cfg.ServerRetry.MaxInterval = val
 			}
-		} else {
-			cfg.ServerRetry.MaxInterval = 5 * time.Minute
-		}
-
-		if valStr := fbit.Conf.String("server.retry.multiplier"); valStr != "" {
-			val, err := strconv.ParseFloat(valStr, 64)
-			if err != nil {
-				log.Warn("could not parse 'server.retry.multiplier', using default of 1.5. error: %v", err)
+			if valStr := fbit.Conf.String("server.retry.multiplier"); valStr != "" {
+				val, err := strconv.ParseFloat(valStr, 64)
+				if err != nil {
+					log.Warn("could not parse 'server.retry.multiplier', using default of 1.5. error: %v", err)
+					cfg.ServerRetry.Multiplier = 1.5
+				} else {
+					cfg.ServerRetry.Multiplier = val
+				}
+			} else {
 				cfg.ServerRetry.Multiplier = 1.5
-			} else {
-				cfg.ServerRetry.Multiplier = val
 			}
-		} else {
-			cfg.ServerRetry.Multiplier = 1.5
-		}
+			if cfg.ServerRetry.Multiplier <= 1.0 {
+				log.Warn("'server.retry.multiplier' must be > 1.0, using default of 1.5")
+				cfg.ServerRetry.Multiplier = 1.5
+			}
 
-		if cfg.ServerRetry.Multiplier <= 1.0 {
-			log.Warn("'server.retry.multiplier' must be > 1.0, using default of 1.5")
-			cfg.ServerRetry.Multiplier = 1.5
-		}
-
-		if cfg.ServerEndpoint == "" {
-			return nil, errors.New("'server.endpoint' is required for server/all mode")
-		}
-		serviceNamesStr := fbit.Conf.String("server.service_names")
-		if serviceNamesStr == "" {
-			return nil, errors.New("'server.service_names' (comma-separated) is required for server/all mode")
-		}
-		for _, s := range strings.Split(serviceNamesStr, ",") {
-			cfg.ServerServiceNames = append(cfg.ServerServiceNames, strings.TrimSpace(s))
+			serviceNamesStr := fbit.Conf.String("server.service_names")
+			if serviceNamesStr == "" {
+				return nil, errors.New("'server.service_names' (comma-separated) is required for server/all mode with a remote endpoint")
+			}
+			for _, s := range strings.Split(serviceNamesStr, ",") {
+				cfg.ServerServiceNames = append(cfg.ServerServiceNames, strings.TrimSpace(s))
+			}
 		}
 	}
 	return cfg, nil

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"strings"
@@ -70,13 +71,23 @@ func (plug *jaegerRemotePlugin) initClient(ctx context.Context) error {
 func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 	plug.log.Info("initializing server mode...")
 	plug.server = &serverComponent{}
-	sampler, err := plug.newSamplerFn(ctx, plug.config)
-	if err != nil {
-		return fmt.Errorf("could not create remote sampler for server: %w", err)
-	}
-	plug.server.sampler = sampler
 	plug.server.cache = &samplingStrategyCache{strategies: make(map[string]*api_v2.SamplingStrategyResponse)}
 
+	// Determine strategy source: remote or file
+	if plug.config.ServerStrategyFile != "" {
+		if err := plug.loadStrategiesFromFile(); err != nil {
+			return fmt.Errorf("could not load strategies from file: %w", err)
+		}
+	} else if plug.config.ServerEndpoint != "" {
+		sampler, err := plug.newSamplerFn(ctx, plug.config)
+		if err != nil {
+			return fmt.Errorf("could not create remote sampler for server: %w", err)
+		}
+		plug.server.sampler = sampler
+	}
+
+	// Start servers only if their listen addresses are configured.
+	var err error
 	if plug.config.ServerHttpListenAddr != "" {
 		plug.server.httpServer = plug.startHttpServer()
 	}
@@ -97,8 +108,10 @@ func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 		return errors.New("server mode is enabled, but neither 'server.http.listen_addr' nor 'server.grpc.listen_addr' are configured")
 	}
 
-	// All checks passed, now start background goroutines.
-	go plug.pollStrategiesWithRetry(ctx)
+	// All checks passed, set up cleanup goroutine.
+	if plug.config.ServerEndpoint != "" {
+		go plug.pollStrategiesWithRetry(ctx)
+	}
 	go func() {
 		<-ctx.Done()
 		plug.log.Info("shutting down server components...")
@@ -106,8 +119,8 @@ func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 			plug.server.grpcServer.GracefulStop()
 			plug.log.Info("gRPC server stopped.")
 		}
-		if sampler.conn != nil {
-			_ = sampler.conn.Close()
+		if plug.server.sampler != nil && plug.server.sampler.conn != nil {
+			_ = plug.server.sampler.conn.Close()
 			plug.log.Info("gRPC client connection to Jaeger Collector closed.")
 		}
 		if plug.server.httpServer != nil {
@@ -164,6 +177,23 @@ func (plug *jaegerRemotePlugin) pollStrategiesWithRetry(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func (plug *jaegerRemotePlugin) loadStrategiesFromFile() error {
+	plug.log.Info("loading sampling strategies from file: %s", plug.config.ServerStrategyFile)
+	data, err := ioutil.ReadFile(plug.config.ServerStrategyFile)
+	if err != nil {
+		return fmt.Errorf("could not read strategy file: %w", err)
+	}
+	var strategies map[string]*api_v2.SamplingStrategyResponse
+	if err := json.Unmarshal(data, &strategies); err != nil {
+		return fmt.Errorf("could not unmarshal strategy file as a map of service strategies: %w", err)
+	}
+	plug.server.cache.Lock()
+	plug.server.cache.strategies = strategies
+	plug.server.cache.Unlock()
+	plug.log.Info("successfully loaded %d strategies from file", len(strategies))
+	return nil
 }
 
 func (plug *jaegerRemotePlugin) updateCache(ctx context.Context) error {

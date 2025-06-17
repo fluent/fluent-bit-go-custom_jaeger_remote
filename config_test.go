@@ -125,7 +125,7 @@ func Test_loadConfig_ModeServer(t *testing.T) {
 		}
 		_, err := loadConfig(fbit)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "'server.endpoint' is required")
+		assert.Contains(t, err.Error(), "for server mode, either 'server.endpoint' or 'server.strategy_file' must be configured")
 	})
 }
 
