@@ -212,25 +212,6 @@ func (plug *jaegerRemotePlugin) loadStrategiesFromFile() error {
 	return nil
 }
 
-func (plug *jaegerRemotePlugin) updateCache(ctx context.Context) error {
-	plug.log.Info("server updating %d sampling strategies...", len(plug.config.ServerServiceNames))
-	var lastErr error
-	for _, svcName := range plug.config.ServerServiceNames {
-		grpcResp, err := plug.server.sampler.client.GetSamplingStrategy(ctx, &api_v2.SamplingStrategyParameters{ServiceName: svcName})
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		plug.server.cache.Lock()
-		plug.server.cache.strategies[svcName] = &cacheEntry{
-			strategy:   grpcResp,
-			expires_at: time.Now().Add(plug.config.ServerReloadInterval),
-		}
-		plug.server.cache.Unlock()
-	}
-	return lastErr
-}
-
 func (plug *jaegerRemotePlugin) startHttpServer() *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sampling", plug.handleSampling)
