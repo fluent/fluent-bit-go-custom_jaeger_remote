@@ -122,6 +122,7 @@ This mode enables both client and server functionalities simultaneously.
 | **Client Settings** |               |                                                                                                         |                          |
 | `client.server_url`                      | `client`/`all`  | The endpoint URL of the OTLP collector to which traces will be sent.                                      | **Required** |
 | `client.sampling_url`                    | `client`/`all`  | The URL of the Jaeger-compatible sampling server to poll for strategies.                                | **Required** |
+| `client.rate`                            | `client`/`all`  | The sampling period of the sending requests for Jaeger-compatible sampling server                           | `5s`               |
 | **Server Settings** |               |                                                                                                         |                          |
 | `server.endpoint`                        | `server`/`all`  | The gRPC endpoint of the Jaeger Collector to poll for sampling strategies. **Mutually exclusive** with server.strategy_file. | **Required** |
 { `server.strategy_file`                   | `server`/`all`  | Path to a local JSON file containing sampling strategies. **Mutually exclusive** with `server.endpoint`.    | ` ` (Disabled)           |

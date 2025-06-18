@@ -70,6 +70,7 @@ func Test_loadConfig_ModeClient(t *testing.T) {
 		cfg, err := loadConfig(fbit)
 		assert.NoError(t, err)
 		assert.Equal(t, "client", cfg.Mode)
+		assert.Equal(t, 5 *time.Second, cfg.ClientRate)
 	})
 
 	t.Run("mode=client missing server_url should fail", func(t *testing.T) {
@@ -96,6 +97,36 @@ func Test_loadConfig_ModeClient(t *testing.T) {
 		_, err := loadConfig(fbit)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "'client.sampling_url' is required")
+	})
+
+	t.Run("client mode with negative client.rate should fail", func(t *testing.T) {
+		fbit := &plugin.Fluentbit{
+			Logger: newTestLogger(t),
+			Conf: mapConfigLoader{
+				"mode":                   "client",
+				"client.server_url": "http://localhost:4318",
+				"client.sampling_url": "http://localhost:5778/sampling",
+				"client.rate": "-20s", // Invalid format
+			},
+		}
+		_, err := loadConfig(fbit)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "rate must be a positive duration")
+	})
+
+	t.Run("client mode with not to be succeeded to parse client.rate should fail", func(t *testing.T) {
+		fbit := &plugin.Fluentbit{
+			Logger: newTestLogger(t),
+			Conf: mapConfigLoader{
+				"mode":                   "client",
+				"client.server_url": "http://localhost:4318",
+				"client.sampling_url": "http://localhost:5778/sampling",
+				"client.rate": "-20", // Invalid format
+			},
+		}
+		_, err := loadConfig(fbit)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot parse rate as duration: time: missing unit in duration ")
 	})
 }
 
@@ -163,14 +194,12 @@ func Test_loadConfig_InvalidValues(t *testing.T) {
 }
 
 func Test_loadTLSConfig_FileErrors(t *testing.T) {
-    // Test for a non-existent CA file
-    t.Run("should fail with non-existent CA file", func(t *testing.T) {
-        cfg := TLSSettings{CAFile: "/tmp/this-file-does-not-exist.ca"}
-        _, err := loadTLSConfig(cfg)
-        assert.Error(t, err)
-    })
+	t.Run("should fail with non-existent CA file", func(t *testing.T) {
+		cfg := TLSSettings{CAFile: "/tmp/this-file-does-not-exist.ca"}
+		_, err := loadTLSConfig(cfg)
+		assert.Error(t, err)
+	})
 
-    // Test for a bad key pair
 	t.Run("should fail with invalid cert/key pair", func(t *testing.T) {
 		// Create dummy (but invalid) files
 		certFile, _ := os.CreateTemp("", "cert")

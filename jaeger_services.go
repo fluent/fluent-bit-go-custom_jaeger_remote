@@ -34,7 +34,7 @@ func (plug *jaegerRemotePlugin) initClient(ctx context.Context) error {
 	jaegerRemoteSampler := jaegerremote.New(
 		"fluent-bit-go",
 		jaegerremote.WithSamplingServerURL(plug.config.ClientSamplingURL),
-		jaegerremote.WithSamplingRefreshInterval(10*time.Second),
+		jaegerremote.WithSamplingRefreshInterval(plug.config.ClientRate),
 		jaegerremote.WithInitialSampler(sdktrace.TraceIDRatioBased(0.5)),
 	)
 
@@ -56,9 +56,21 @@ func (plug *jaegerRemotePlugin) initClient(ctx context.Context) error {
 	plug.clientTracer = &clientComponent{tracerProvider: tp}
 
 	go func() {
+		ticker := time.Tick(plug.config.ClientRate)
+		for {
+			<-ticker
+			plug.log.Debug("[jaeger_remote] jeager sampling is alive %v", time.Now())
+		}
+	}()
+
+	go func() {
 		<-ctx.Done()
 		plug.log.Info("shutting down client tracer provider...")
-		if err := tp.Shutdown(ctx); err != nil {
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := tp.Shutdown(shutdownCtx); err != nil {
 			plug.log.Error("failed to shutdown tracer provider: %v", err)
 		}
 	}()
