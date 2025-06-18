@@ -124,7 +124,7 @@ This mode enables both client and server functionalities simultaneously.
 | `client.sampling_url`                    | `client`/`all`  | The URL of the Jaeger-compatible sampling server to poll for strategies.                                | **Required** |
 | **Server Settings** |               |                                                                                                         |                          |
 | `server.endpoint`                        | `server`/`all`  | The gRPC endpoint of the Jaeger Collector to poll for sampling strategies. **Mutually exclusive** with server.strategy_file. | **Required** |
-{ `server.strategy_file`                   | `server`/`all`  | Path to a local JSON file containing sampling strategies. **Mutually exclusive** with `server.endpoint`.    | ` ` (Disabled)           |
+| `server.strategy_file`                   | `server`/`all`  | Path to a local JSON file containing sampling strategies. **Mutually exclusive** with `server.endpoint`.    | ` ` (Disabled)           |
 | `server.service_names`                   | `server`/`all`  | A comma-separated list of service names to fetch strategies for.                                        | **Required** |
 | `server.http.listen_addr`                | `server`/`all`  | The address and port for the internal HTTP server to listen on. If empty, the HTTP server is disabled.    | ` ` (Disabled)           |
 | `server.grpc.listen_addr`                | `server`/`all`  | The address and port for the internal gRPC server to listen on. If empty, the gRPC server is disabled.   | ` ` (Disabled)           |
