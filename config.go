@@ -90,7 +90,7 @@ func loadConfig(fbit *plugin.Fluentbit) (*Config, error) {
 				return nil, errors.New("rate must be a positive duration")
 			}
 		} else {
-			cfg.ClientRate = 5 *time.Second
+			cfg.ClientRate = 5 * time.Second
 		}
 	}
 

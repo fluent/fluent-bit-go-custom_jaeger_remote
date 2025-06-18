@@ -60,6 +60,7 @@ type Config struct {
 	// Client-specific settings
 	ClientServerURL   string
 	ClientSamplingURL string
+	ClientRate        time.Duration
 	// Server-specific settings
 	ServerEndpoint       string
 	ServerStrategyFile   string
@@ -72,7 +73,6 @@ type Config struct {
 	ServerKeepalive      *KeepaliveConfig
 	ServerRetry          *RetryConfig
 	ServerReloadInterval time.Duration
-	ClientRate           time.Duration
 }
 
 type KeepaliveConfig struct {

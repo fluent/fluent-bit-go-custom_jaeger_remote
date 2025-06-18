@@ -70,7 +70,7 @@ func Test_loadConfig_ModeClient(t *testing.T) {
 		cfg, err := loadConfig(fbit)
 		assert.NoError(t, err)
 		assert.Equal(t, "client", cfg.Mode)
-		assert.Equal(t, 5 *time.Second, cfg.ClientRate)
+		assert.Equal(t, 5*time.Second, cfg.ClientRate)
 	})
 
 	t.Run("mode=client missing server_url should fail", func(t *testing.T) {
@@ -103,10 +103,10 @@ func Test_loadConfig_ModeClient(t *testing.T) {
 		fbit := &plugin.Fluentbit{
 			Logger: newTestLogger(t),
 			Conf: mapConfigLoader{
-				"mode":                   "client",
-				"client.server_url": "http://localhost:4318",
+				"mode":                "client",
+				"client.server_url":   "http://localhost:4318",
 				"client.sampling_url": "http://localhost:5778/sampling",
-				"client.rate": "-20s", // Invalid format
+				"client.rate":         "-20s", // Invalid format
 			},
 		}
 		_, err := loadConfig(fbit)
@@ -118,10 +118,10 @@ func Test_loadConfig_ModeClient(t *testing.T) {
 		fbit := &plugin.Fluentbit{
 			Logger: newTestLogger(t),
 			Conf: mapConfigLoader{
-				"mode":                   "client",
-				"client.server_url": "http://localhost:4318",
+				"mode":                "client",
+				"client.server_url":   "http://localhost:4318",
 				"client.sampling_url": "http://localhost:5778/sampling",
-				"client.rate": "-20", // Invalid format
+				"client.rate":         "-20", // Invalid format
 			},
 		}
 		_, err := loadConfig(fbit)
@@ -162,15 +162,15 @@ func Test_loadConfig_ModeServer(t *testing.T) {
 }
 
 func Test_loadConfig_InvalidValues(t *testing.T) {
-    // Test for a bad duration value
+	// Test for a bad duration value
 	t.Run("server mode with invalid reload_interval logs warning and uses default", func(t *testing.T) {
 		fbit := &plugin.Fluentbit{
 			Logger: newTestLogger(t),
 			Conf: mapConfigLoader{
-				"mode":                    "server",
-				"server.endpoint":         "jaeger-collector:14250",
-				"server.service_names":    "service1",
-				"server.reload_interval":  "5minutes", // Invalid format
+				"mode":                   "server",
+				"server.endpoint":        "jaeger-collector:14250",
+				"server.service_names":   "service1",
+				"server.reload_interval": "5minutes", // Invalid format
 			},
 		}
 		cfg, err := loadConfig(fbit)
