@@ -139,6 +139,39 @@ func Test_InitServer_FileStrategy(t *testing.T) {
 	})
 }
 
+func Test_InitServer_FileStrategyErrors(t *testing.T) {
+	t.Run("fails when strategy file does not exist", func(t *testing.T) {
+		fbit := &plugin.Fluentbit{
+			Logger: newTestLogger(t),
+			Conf:   mapConfigLoader{"mode": "server", "server.strategy_file": "/tmp/non-existent-file.json"},
+		}
+		plug := &jaegerRemotePlugin{}
+		err := plug.Init(context.Background(), fbit)
+		assert.Error(t, err)
+	})
+
+	t.Run("fails when strategy file contains invalid json", func(t *testing.T) {
+		tmpFile, err := os.CreateTemp("", "strategy-*.json")
+		assert.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write([]byte(`{ "invalid-json`))
+		assert.NoError(t, err)
+		tmpFile.Close()
+
+		fbit := &plugin.Fluentbit{
+			Logger: newTestLogger(t),
+			Conf: mapConfigLoader{
+				"mode":                 "server",
+				"server.strategy_file": tmpFile.Name(),
+			},
+		}
+		plug := &jaegerRemotePlugin{}
+		err = plug.Init(context.Background(), fbit)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "could not unmarshal")
+	})
+}
+
 func Test_InitClient(t *testing.T) {
 	t.Run("successfully initializes in client mode", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -256,6 +289,105 @@ func Test_InitServer_EndToEnd(t *testing.T) {
 			}
 		})
 	}
+}
+
+/* Helper function to mock sampling manager client */
+
+type mockSamplingClient struct {
+	api_v2.SamplingManagerClient
+	GetSamplingStrategyFunc func(ctx context.Context, in *api_v2.SamplingStrategyParameters, opts ...grpc.CallOption) (*api_v2.SamplingStrategyResponse, error)
+}
+
+func (m *mockSamplingClient) GetSamplingStrategy(ctx context.Context, in *api_v2.SamplingStrategyParameters, opts ...grpc.CallOption) (*api_v2.SamplingStrategyResponse, error) {
+	if m.GetSamplingStrategyFunc != nil {
+		return m.GetSamplingStrategyFunc(ctx, in, opts...)
+	}
+	return nil, status.Error(codes.Unimplemented, "method GetSamplingStrategy not implemented")
+}
+
+func Test_getAndCacheStrategy_Retry(t *testing.T) {
+	t.Run("should retry on failure and eventually succeed", func(t *testing.T) {
+		var callCount int
+		mockSuccessStrategy := &api_v2.SamplingStrategyResponse{StrategyType: api_v2.SamplingStrategyType_PROBABILISTIC}
+		mockErr := status.Error(codes.Unavailable, "server not ready")
+
+		mockClient := &mockSamplingClient{
+			GetSamplingStrategyFunc: func(ctx context.Context, in *api_v2.SamplingStrategyParameters, opts ...grpc.CallOption) (*api_v2.SamplingStrategyResponse, error) {
+				callCount++
+				if callCount > 2 {
+					return mockSuccessStrategy, nil
+				}
+				return nil, mockErr
+			},
+		}
+
+		plug := &jaegerRemotePlugin{
+			log: newTestLogger(t),
+			config: &Config{
+				ServerRetry: &RetryConfig{
+					InitialInterval: 10 * time.Millisecond,
+					MaxInterval:     100 * time.Millisecond,
+					Multiplier:      1.5,
+					MaxRetry:        5,
+				},
+			},
+			server: &serverComponent{
+				cache: &samplingStrategyCache{
+					strategies: make(map[string]*cacheEntry),
+				},
+				sampler: &remoteSampler{
+					client: mockClient,
+				},
+			},
+		}
+
+		strategy, err := plug.getAndCacheStrategy(context.Background(), "test-service")
+
+		assert.NoError(t, err)
+		assert.NotZero(t, strategy)
+		assert.Equal(t, mockSuccessStrategy, strategy)
+		assert.Equal(t, 3, callCount, "Expected the client to be called 3 times (2 failures, 1 success)")
+	})
+
+	t.Run("should stop retrying if context is cancelled", func(t *testing.T) {
+		mockErr := status.Error(codes.Unavailable, "server not ready")
+		mockClient := &mockSamplingClient{
+			GetSamplingStrategyFunc: func(ctx context.Context, in *api_v2.SamplingStrategyParameters, opts ...grpc.CallOption) (*api_v2.SamplingStrategyResponse, error) {
+				return nil, mockErr
+			},
+		}
+
+		plug := &jaegerRemotePlugin{
+			log: newTestLogger(t),
+			config: &Config{
+				ServerRetry: &RetryConfig{
+					InitialInterval: 50 * time.Millisecond,
+					MaxInterval:     200 * time.Millisecond,
+					Multiplier:      1.5,
+					MaxRetry:        10,
+				},
+			},
+			server: &serverComponent{
+				cache: &samplingStrategyCache{
+					strategies: make(map[string]*cacheEntry),
+				},
+				sampler: &remoteSampler{
+					client: mockClient,
+				},
+			},
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			cancel()
+		}()
+
+		_, err := plug.getAndCacheStrategy(ctx, "test-service")
+
+		assert.Error(t, err)
+	})
 }
 
 func Test_InitServer_Failure(t *testing.T) {
@@ -439,6 +571,22 @@ func Test_ServerHandlers(t *testing.T) {
 		s.plug.handleSampling(rr, req)
 
 		assert.Equal(t, http.StatusNotFound, rr.Code)
+	})
+
+	t.Run("HTTP handler returns 400 Bad Request for missing service", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/sampling", nil) // No service param
+		rr := httptest.NewRecorder()
+		plug.handleSampling(rr, req)
+		assert.Equal(t, http.StatusBadRequest, rr.Code)
+	})
+
+	t.Run("gRPC handler returns InvalidArgument for missing service name", func(t *testing.T) {
+		s := &grpcApiServer{plug: plug}
+		params := &api_v2.SamplingStrategyParameters{ServiceName: ""} // Empty service name
+		_, err := s.GetSamplingStrategy(context.Background(), params)
+		st, ok := status.FromError(err)
+		assert.True(t, ok)
+		assert.Equal(t, codes.InvalidArgument, st.Code())
 	})
 }
 

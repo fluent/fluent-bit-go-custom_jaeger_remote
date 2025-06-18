@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -126,6 +127,63 @@ func Test_loadConfig_ModeServer(t *testing.T) {
 		_, err := loadConfig(fbit)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "for server mode, either 'server.endpoint' or 'server.strategy_file' must be configured")
+	})
+}
+
+func Test_loadConfig_InvalidValues(t *testing.T) {
+    // Test for a bad duration value
+	t.Run("server mode with invalid reload_interval logs warning and uses default", func(t *testing.T) {
+		fbit := &plugin.Fluentbit{
+			Logger: newTestLogger(t),
+			Conf: mapConfigLoader{
+				"mode":                    "server",
+				"server.endpoint":         "jaeger-collector:14250",
+				"server.service_names":    "service1",
+				"server.reload_interval":  "5minutes", // Invalid format
+			},
+		}
+		cfg, err := loadConfig(fbit)
+		assert.NoError(t, err)
+		assert.Equal(t, 5*time.Minute, cfg.ServerReloadInterval)
+	})
+
+	t.Run("server mode with both endpoint and strategy_file should fail", func(t *testing.T) {
+		fbit := &plugin.Fluentbit{
+			Logger: newTestLogger(t),
+			Conf: mapConfigLoader{
+				"mode":                 "server",
+				"server.endpoint":      "jaeger-collector:14250",
+				"server.strategy_file": "/path/to/file.json",
+			},
+		}
+		_, err := loadConfig(fbit)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "are mutually exclusive")
+	})
+}
+
+func Test_loadTLSConfig_FileErrors(t *testing.T) {
+    // Test for a non-existent CA file
+    t.Run("should fail with non-existent CA file", func(t *testing.T) {
+        cfg := TLSSettings{CAFile: "/tmp/this-file-does-not-exist.ca"}
+        _, err := loadTLSConfig(cfg)
+        assert.Error(t, err)
+    })
+
+    // Test for a bad key pair
+	t.Run("should fail with invalid cert/key pair", func(t *testing.T) {
+		// Create dummy (but invalid) files
+		certFile, _ := os.CreateTemp("", "cert")
+		defer os.Remove(certFile.Name())
+		keyFile, _ := os.CreateTemp("", "key")
+		defer os.Remove(keyFile.Name())
+
+		certFile.WriteString("not a cert")
+		keyFile.WriteString("not a key")
+
+		cfg := TLSSettings{CertFile: certFile.Name(), KeyFile: keyFile.Name()}
+		_, err := loadTLSConfig(cfg)
+		assert.Error(t, err)
 	})
 }
 
