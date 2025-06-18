@@ -24,6 +24,13 @@ custom_jeager_remote.so
 
 ## Configuration
 
+For specifying the place of plugin's shared object, we need to specify the path in plugin.yaml:
+
+```yaml
+plugins:
+    - /path/to/custom_jeager_remote.so
+```
+
 For custom jeager plugin, we need to add custom section in fluent-bit conf:
 
 ### Basic structure
