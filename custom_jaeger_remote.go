@@ -72,6 +72,7 @@ type Config struct {
 	ServerKeepalive      *KeepaliveConfig
 	ServerRetry          *RetryConfig
 	ServerReloadInterval time.Duration
+	ClientRate           time.Duration
 }
 
 type KeepaliveConfig struct {

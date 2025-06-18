@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"strconv"
 	"strings"
@@ -77,6 +78,19 @@ func loadConfig(fbit *plugin.Fluentbit) (*Config, error) {
 		}
 		if cfg.ClientSamplingURL == "" {
 			return nil, errors.New("'client.sampling_url' is required for client/all mode")
+		}
+
+		if s := fbit.Conf.String("client.rate"); s != "" {
+			var err error
+			cfg.ClientRate, err = time.ParseDuration(s)
+			if err != nil {
+				return nil, fmt.Errorf("cannot parse rate as duration: %w", err)
+			}
+			if cfg.ClientRate < 0 {
+				return nil, errors.New("rate must be a positive duration")
+			}
+		} else {
+			cfg.ClientRate = 5 *time.Second
 		}
 	}
 
