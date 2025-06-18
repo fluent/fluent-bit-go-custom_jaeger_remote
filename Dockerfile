@@ -26,7 +26,7 @@ ADD https://github.com/fluent/cmetrics/releases/download/${CMETRICS_RELEASE}/cme
 ADD https://github.com/fluent/cmetrics/releases/download/${CMETRICS_RELEASE}/cmetrics_${CMETRICS_VERSION}_${PACKAGEARCH}.deb external/
 RUN dpkg -i external/*.deb
 
-RUN go build -trimpath -buildmode=c-shared -o /fluent-bit-go/custom_jaeger_remote.so /fluent-bit-go/custom_jaeger_remote.go
+RUN go build -trimpath -buildmode=c-shared -o /fluent-bit-go/custom_jaeger_remote.so /fluent-bit-go/*.go
 
 FROM ghcr.io/chronosphereio/calyptia-internal/core-fluent-bit:main
 
