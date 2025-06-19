@@ -28,11 +28,11 @@ RUN dpkg -i external/*.deb
 
 RUN go build -trimpath -buildmode=c-shared -o /fluent-bit-go/custom_jaeger_remote.so /fluent-bit-go/*.go
 
-FROM ghcr.io/chronosphereio/calyptia-internal/core-fluent-bit:main
+FROM ghcr.io/fluent/fluent-bit:4.0.3
 
 COPY --from=builder /fluent-bit-go/custom_jaeger_remote.so /fluent-bit/etc/
 COPY --from=builder /fluent-bit-go/fluent-bit.conf /fluent-bit/etc/
 COPY --from=builder /fluent-bit-go/plugins.conf /fluent-bit/etc/
 
-ENTRYPOINT [ "/fluent-bit/bin/calyptia-fluent-bit" ]
-CMD [ "/fluent-bit/bin/calyptia-fluent-bit", "-c", "/fluent-bit/etc/fluent-bit.conf" ]
+ENTRYPOINT [ "/fluent-bit/bin/fluent-bit" ]
+CMD [ "/fluent-bit/bin/fluent-bit", "-c", "/fluent-bit/etc/fluent-bit.conf" ]
