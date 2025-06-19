@@ -47,9 +47,23 @@ For custom jeager plugin, we need to add custom section in fluent-bit conf:
     # --- Add parameters for the selected mode below ---
 ```
 
+#### Yaml format
+
+```yaml
+customs:
+  - name:                jaeger_remote
+    # --- Mode Selection ---
+    # Can be: "client", "server", or "all" (default)
+    mode:                all
+
+    # --- Add parameters for the selected mode below ---
+```
+
 ### Mode: client
 
 In this mode, the plugin acts as an OpenTelemetry client, fetching sampling strategies from an external server.
+
+#### Ini format
 
 ```ini
 [CUSTOM]
@@ -63,9 +77,26 @@ In this mode, the plugin acts as an OpenTelemetry client, fetching sampling stra
     client.sampling_url http://localhost:5778/sampling
 ```
 
+#### Yaml format
+
+```yaml
+customs:
+  - name:                jaeger_remote
+    mode:                client
+
+    # URL of the OTLP-compatible collector to send traces to.
+    client.server_url:   http://localhost:4318
+
+    # URL of the Jaeger-compatible sampling server.
+    client.sampling_url: http://localhost:5778/sampling
+```
+
 ### Mode: Server
 
 In this mode, the plugin polls a Jaeger Collector for strategies and serves them via its own HTTP and/or gRPC endpoints. You can enable one or both by providing their listen addresses.
+
+
+#### Ini format
 
 ```ini
 [CUSTOM]
@@ -85,11 +116,34 @@ In this mode, the plugin polls a Jaeger Collector for strategies and serves them
     server.keepalive.time         30s
 ```
 
+#### Yaml format
+
+```yaml
+customs:
+  - name:                jaeger_remote
+    mode:                server
+
+    # --- Connection to Jaeger Collector ---
+    server.endpoint:      jaeger-collector:14250
+    server.service_names: frontend,backend,database
+
+    # --- Exposed Endpoints (enable one or both) ---
+    server.http.listen_addr: 0.0.0.0:8899
+    server.grpc.listen_addr: 0.0.0.0:9099
+
+    # --- Advanced Connection Settings (Optional) ---
+    server.retry.initial_interval: 10s
+    server.keepalive.time:         30s
+```
+
 ### Mode: server (Local File)
 
 This mode loads a static strategy file and serves it via HTTP and/or gRPC. It does not connect to a remote Jaeger Collector.
 
-```
+
+#### Ini format
+
+```ini
 [CUSTOM]
     Name                   jaeger_remote
     Mode                   server
@@ -101,9 +155,28 @@ This mode loads a static strategy file and serves it via HTTP and/or gRPC. It do
     server.http.listen_addr  0.0.0.0:8899
 ```
 
+
+#### Yaml format
+
+```yaml
+customs:
+  - name:                jaeger_remote
+    mode:                server
+
+    # --- Local Strategy File ---
+    server.strategy_file:   /path/to/my_strategies.json
+
+    # --- Exposed Endpoints ---
+    server.http.listen_addr:  0.0.0.0:8899
+```
+
+
 ### Mode: All
 
 This mode enables both client and server functionalities simultaneously.
+
+
+#### Ini format
 
 ```ini
 [CUSTOM]
@@ -119,6 +192,24 @@ This mode enables both client and server functionalities simultaneously.
     server.service_names frontend,backend,database
     server.http.listen_addr 0.0.0.0:8899
     server.grpc.listen_addr 0.0.0.0:9099
+```
+
+#### Yaml format
+
+```yaml
+customs:
+  - name:                jaeger_remote
+    mode:                all
+
+    # --- Client Parameters ---
+    client.server_url:   http://localhost:4318
+    client.sampling_url: http://localhost:5778/sampling
+
+    # --- Server Parameters ---
+    server.endpoint:      jaeger-collector:14250
+    server.service_names: frontend,backend,database
+    server.http.listen_addr: 0.0.0.0:8899
+    server.grpc.listen_addr: 0.0.0.0:9099
 ```
 
 ## Parameter Reference
