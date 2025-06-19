@@ -101,6 +101,10 @@ func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 			return fmt.Errorf("could not create remote sampler for server: %w", err)
 		}
 		plug.server.sampler = sampler
+		if len(plug.config.ServerServiceNames) > 0 {
+			plug.log.Info("starting proactive cache warmer for %d services.", len(plug.config.ServerServiceNames))
+			go plug.startProactiveCacheWarmer(ctx)
+		}
 	}
 
 	// Start servers only if their listen addresses are configured.
@@ -332,6 +336,32 @@ func (plug *jaegerRemotePlugin) startGrpcServer() (*grpc.Server, error) {
 	}()
 	return s, nil
 }
+
+func (plug *jaegerRemotePlugin) startProactiveCacheWarmer(ctx context.Context) {
+	warmUp := func() {
+		plug.log.Debug("proactive cache warmer starting refresh cycle...")
+		for _, serviceName := range plug.config.ServerServiceNames {
+			_, _ = plug.getAndCacheStrategy(ctx, serviceName)
+		}
+		plug.log.Debug("proactive cache warmer finished refresh cycle.")
+	}
+
+	warmUp()
+
+	ticker := time.NewTicker(plug.config.ServerReloadInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			warmUp()
+		case <-ctx.Done():
+			plug.log.Info("proactive cache warmer stopped.")
+			return
+		}
+	}
+}
+
 func (s *grpcApiServer) GetSamplingStrategy(ctx context.Context, params *api_v2.SamplingStrategyParameters) (*api_v2.SamplingStrategyResponse, error) {
 	serviceName := params.GetServiceName()
 	if serviceName == "" {

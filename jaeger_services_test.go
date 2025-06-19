@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,13 +35,16 @@ type observedCall struct {
 
 type samplingServer struct {
 	api_v2.UnimplementedSamplingManagerServer
-	mu            sync.Mutex
-	observedCalls []observedCall
-	strategy      *api_v2.SamplingStrategyResponse
-	err           error
+	mu              sync.Mutex
+	observedCalls   []observedCall
+	strategy        *api_v2.SamplingStrategyResponse
+	err             error
+	actualCallCount int32
 }
 
 func (s *samplingServer) GetSamplingStrategy(ctx context.Context, params *api_v2.SamplingStrategyParameters) (*api_v2.SamplingStrategyResponse, error) {
+	atomic.AddInt32(&s.actualCallCount, 1) // Use atomic for safe concurrent increments
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.observedCalls = append(s.observedCalls, observedCall{Context: ctx, Params: params})
@@ -49,6 +53,10 @@ func (s *samplingServer) GetSamplingStrategy(ctx context.Context, params *api_v2
 		return nil, s.err
 	}
 	return s.strategy, nil
+}
+
+func (s *samplingServer) getCallCount() int {
+	return int(atomic.LoadInt32(&s.actualCallCount))
 }
 
 func (s *samplingServer) callCount() int {
@@ -207,6 +215,58 @@ func Test_InitClient(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotZero(t, plug.clientTracer, "clientTracer should be initialized")
 		assert.NotZero(t, plug.clientTracer.tracerProvider, "tracerProvider should be initialized")
+	})
+}
+
+func Test_startProactiveCacheWarmer(t *testing.T) {
+	t.Run("proactive warmer fetches strategies on startup and periodically", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
+		mockStrategy := &api_v2.SamplingStrategyResponse{StrategyType: api_v2.SamplingStrategyType_PROBABILISTIC, ProbabilisticSampling: &api_v2.ProbabilisticSamplingStrategy{SamplingRate: 0.1}}
+		mockJaeger := &samplingServer{strategy: mockStrategy}
+		upstreamJaegerServer, lis := startMockGrpcServer(t, mockJaeger)
+		defer upstreamJaegerServer.Stop()
+
+		httpListenAddr := getFreePort(t)
+
+		fbit := &plugin.Fluentbit{
+			Logger: newTestLogger(t),
+			Conf: mapConfigLoader{
+				"mode":                          "server",
+				"server.endpoint":               "bufnet",
+				"server.http.listen_addr":       httpListenAddr,
+				"server.service_names":          "service-a, service-b", // Two services to warm up
+				"server.reload_interval":        "50ms",                 // Very short interval for testing
+				"server.retry.initial_interval": "10ms",
+			},
+		}
+		plug := &jaegerRemotePlugin{}
+
+		plug.newSamplerFn = func(ctx context.Context, cfg *Config) (*remoteSampler, error) {
+			dialOpts := []grpc.DialOption{
+				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+			}
+			conn, err := grpc.DialContext(ctx, cfg.ServerEndpoint, dialOpts...)
+			assert.NoError(t, err)
+			client := api_v2.NewSamplingManagerClient(conn)
+			return &remoteSampler{conn: conn, client: client}, nil
+		}
+
+		err := plug.Init(ctx, fbit)
+		assert.NoError(t, err)
+
+		// Check initial warm-up
+		// We expect 2 initial calls, one for each service.
+		// Use a small sleep to allow the initial goroutine to run.
+		time.Sleep(20 * time.Millisecond)
+		assert.Equal(t, 2, mockJaeger.getCallCount(), "expected 2 calls for initial cache warm-up")
+
+		// Check periodic refresh
+		// Wait for a period longer than the reload interval (50ms)
+		time.Sleep(60 * time.Millisecond)
+		assert.Equal(t, 4, mockJaeger.getCallCount(), "expected 2 more calls for the first periodic refresh")
 	})
 }
 
