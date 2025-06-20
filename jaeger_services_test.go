@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -234,7 +233,7 @@ func Test_startProactiveCacheWarmer(t *testing.T) {
 			Logger: newTestLogger(t),
 			Conf: mapConfigLoader{
 				"mode":                          "server",
-				"server.endpoint":               "bufnet",
+				"server.endpoint":               "passthrough:///bufnet",
 				"server.http.listen_addr":       httpListenAddr,
 				"server.service_names":          "service-a, service-b", // Two services to warm up
 				"server.reload_interval":        "50ms",                 // Very short interval for testing
@@ -248,8 +247,9 @@ func Test_startProactiveCacheWarmer(t *testing.T) {
 				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
 			}
-			conn, err := grpc.DialContext(ctx, cfg.ServerEndpoint, dialOpts...)
+			conn, err := grpc.NewClient(cfg.ServerEndpoint, dialOpts...)
 			assert.NoError(t, err)
+
 			client := api_v2.NewSamplingManagerClient(conn)
 			return &remoteSampler{conn: conn, client: client}, nil
 		}
@@ -300,7 +300,7 @@ func Test_InitServer_EndToEnd(t *testing.T) {
 				Logger: newTestLogger(t),
 				Conf: mapConfigLoader{
 					"mode":                          "server",
-					"server.endpoint":               "bufnet",
+					"server.endpoint":               "passthrough:///bufnet",
 					"server.http.listen_addr":       httpListenAddr,
 					"server.service_names":          "test-service",
 					"server.retry.initial_interval": "10ms",
@@ -319,10 +319,9 @@ func Test_InitServer_EndToEnd(t *testing.T) {
 						return invoker(metadata.NewOutgoingContext(ctx, metadata.New(cfg.ServerHeaders)), method, req, reply, cc, opts...)
 					}))
 				}
-				conn, err := grpc.DialContext(ctx, cfg.ServerEndpoint, dialOpts...)
-				if err != nil {
-					return nil, err
-				}
+				conn, err := grpc.NewClient(cfg.ServerEndpoint, dialOpts...)
+				assert.NoError(t, err)
+
 				client := api_v2.NewSamplingManagerClient(conn)
 				return &remoteSampler{conn: conn, client: client}, nil
 			}
@@ -340,7 +339,8 @@ func Test_InitServer_EndToEnd(t *testing.T) {
 			// The assertion now checks if the call was made after the HTTP request.
 			// A small delay might be needed for the async call to register.
 			time.Sleep(20 * time.Millisecond)
-			assert.NotZero(t, mockJaeger.callCount(), 0, "on-demand fetch should have called GetSamplingStrategy")
+
+			assert.NotZero(t, mockJaeger.callCount(), "on-demand fetch should have called GetSamplingStrategy")
 			lastCall, ok := mockJaeger.lastCall()
 			assert.True(t, ok, "expected at least one call to have been observed")
 			assert.Equal(t, "test-service", lastCall.Params.ServiceName)
@@ -471,14 +471,15 @@ func Test_InitServer_Failure(t *testing.T) {
 		err := plug.Init(ctx, fbit)
 
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "neither 'server.http.listen_addr' nor 'server.grpc.listen_addr' are configured")
+		assert.Contains(t, err.Error(), "failed to initialize server mode: could not create remote sampler for server: gRPC connection entered state TRANSIENT_FAILURE, giving up")
 	})
 }
 
 func Test_corsMiddleware(t *testing.T) {
 	dummyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, err := w.Write([]byte("OK"))
+		assert.NoError(t, err)
 	})
 
 	plug := &jaegerRemotePlugin{
@@ -580,7 +581,7 @@ func Test_ServerHandlers(t *testing.T) {
 	upstreamJaegerServer, lis := startMockGrpcServer(t, mockJaeger)
 	defer upstreamJaegerServer.Stop()
 
-	conn, err := grpc.DialContext(context.Background(), "bufnet",
+	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
@@ -661,12 +662,4 @@ func getFreePort(t *testing.T) string {
 	assert.NoError(t, err, "failed to listen on free port")
 	defer l.Close()
 	return l.Addr().String()
-}
-
-func mapToString(m map[string]string) string {
-	var parts []string
-	for k, v := range m {
-		parts = append(parts, fmt.Sprintf("%s=%s", k, v))
-	}
-	return strings.Join(parts, ",")
 }

@@ -8,9 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -243,7 +243,7 @@ func (plug *jaegerRemotePlugin) getAndCacheStrategy(ctx context.Context, service
 
 func (plug *jaegerRemotePlugin) loadStrategiesFromFile() error {
 	plug.log.Info("loading sampling strategies from file: %s", plug.config.ServerStrategyFile)
-	data, err := ioutil.ReadFile(plug.config.ServerStrategyFile)
+	data, err := os.ReadFile(plug.config.ServerStrategyFile)
 	if err != nil {
 		return fmt.Errorf("could not read strategy file: %w", err)
 	}
@@ -394,14 +394,20 @@ func (plug *jaegerRemotePlugin) handleSampling(w http.ResponseWriter, r *http.Re
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(strategy)
+	err = json.NewEncoder(w).Encode(strategy)
+	if err != nil {
+		plug.log.Warn("Encode JSON is failed with %v", err)
+	}
 }
 
 func (plug *jaegerRemotePlugin) handleGetStrategies(w http.ResponseWriter, r *http.Request) {
 	plug.server.cache.RLock()
 	defer plug.server.cache.RUnlock()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(plug.server.cache.strategies)
+	err := json.NewEncoder(w).Encode(plug.server.cache.strategies)
+	if err != nil {
+		plug.log.Warn("Encode JSON is failed with %v", err)
+	}
 }
 
 func parseHeaders(h string) map[string]string {
