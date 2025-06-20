@@ -1,0 +1,56 @@
+name: Go
+
+on:
+  push:
+    branches: [master]
+    tags:
+      - "v*.*.*"
+  pull_request:
+    # branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cmetrics library
+        run: |
+          curl -L https://github.com/fluent/cmetrics/releases/download/${CMETRICS_RELEASE}/cmetrics_${CMETRICS_VERSION}_${ARCH}-headers.deb  --output cmetrics_${CMETRICS_VERSION}_${ARCH}-headers.deb
+          curl -L https://github.com/fluent/cmetrics/releases/download/${CMETRICS_RELEASE}/cmetrics_${CMETRICS_VERSION}_${ARCH}.deb --output cmetrics_${CMETRICS_VERSION}_${ARCH}.deb
+          sudo dpkg -i *.deb
+        shell: bash
+        env:
+          CMETRICS_VERSION: "1.0.1"
+          CMETRICS_RELEASE: "v1.0.1"
+          ARCH: "amd64"
+
+      - name: setup-go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "^1.23"
+          cache-dependency-path: |
+            go.sum
+
+      - name: Test
+        run: go test -v -cover -covermode=atomic -coverprofile=coverage.txt ./...
+
+  golangci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cmetrics library
+        run: |
+          curl -L https://github.com/fluent/cmetrics/releases/download/${CMETRICS_RELEASE}/cmetrics_${CMETRICS_VERSION}_${ARCH}-headers.deb  --output cmetrics_${CMETRICS_VERSION}_${ARCH}-headers.deb
+          curl -L https://github.com/fluent/cmetrics/releases/download/${CMETRICS_RELEASE}/cmetrics_${CMETRICS_VERSION}_${ARCH}.deb --output cmetrics_${CMETRICS_VERSION}_${ARCH}.deb
+          sudo dpkg -i *.deb
+        shell: bash
+        env:
+          CMETRICS_VERSION: "1.0.1"
+          CMETRICS_RELEASE: "v1.0.1"
+          ARCH: "amd64"
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest

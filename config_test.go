@@ -205,16 +205,20 @@ func Test_loadTLSConfig_FileErrors(t *testing.T) {
 
 	t.Run("should fail with invalid cert/key pair", func(t *testing.T) {
 		// Create dummy (but invalid) files
-		certFile, _ := os.CreateTemp("", "cert")
+		certFile, err := os.CreateTemp("", "cert")
+		assert.NoError(t, err)
 		defer os.Remove(certFile.Name())
-		keyFile, _ := os.CreateTemp("", "key")
+		keyFile, err := os.CreateTemp("", "key")
+		assert.NoError(t, err)
 		defer os.Remove(keyFile.Name())
 
-		certFile.WriteString("not a cert")
-		keyFile.WriteString("not a key")
+		_, err = certFile.WriteString("not a cert")
+		assert.NoError(t, err)
+		_, err = keyFile.WriteString("not a key")
+		assert.NoError(t, err)
 
 		cfg := TLSSettings{CertFile: certFile.Name(), KeyFile: keyFile.Name()}
-		_, err := loadTLSConfig(cfg)
+		_, err = loadTLSConfig(cfg)
 		assert.Error(t, err)
 	})
 }
@@ -272,7 +276,8 @@ func Test_loadConfig_CORS(t *testing.T) {
 			cfg := &Config{}
 			conf := mapConfigLoader(tc.inputConf)
 
-			parseCorsConfig(cfg, conf)
+			_, err := parseCorsConfig(cfg, conf)
+			assert.NoError(t, err)
 
 			assert.Equal(t, tc.expectedOrigins, cfg.ServerCors.AllowedOrigins)
 		})

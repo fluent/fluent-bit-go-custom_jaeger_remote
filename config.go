@@ -8,7 +8,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +19,7 @@ import (
 func loadTLSConfig(cfg TLSSettings) (*tls.Config, error) {
 	tlsConfig := &tls.Config{InsecureSkipVerify: cfg.Insecure, ServerName: cfg.ServerName}
 	if cfg.CAFile != "" {
-		caBytes, err := ioutil.ReadFile(cfg.CAFile)
+		caBytes, err := os.ReadFile(cfg.CAFile)
 		if err != nil {
 			return nil, err
 		}

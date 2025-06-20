@@ -16,13 +16,12 @@ import (
 	api_v2 "github.com/jaegertracing/jaeger-idl/proto-gen/api_v2"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 )
-
-const defaultRate = 1 * time.Second
 
 func init() {
 	plugin.RegisterCustom("jaeger_remote", "Jaeger remote sampling", &jaegerRemotePlugin{})
@@ -169,9 +168,27 @@ func newRemoteSampler(ctx context.Context, cfg *Config) (*remoteSampler, error) 
 		}))
 	}
 
-	conn, err := grpc.DialContext(ctx, cfg.ServerEndpoint, dialOpts...)
+	conn, err := grpc.NewClient(cfg.ServerEndpoint, dialOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("grpc dial to jaeger collector failed: %w", err)
+		return nil, fmt.Errorf("grpc newclient to jaeger collector failed: %w", err)
+	}
+
+	waitCtx, connectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer connectCancel()
+
+	conn.Connect()
+
+	for {
+		s := conn.GetState()
+		if s == connectivity.Ready {
+			break
+		}
+		if s == connectivity.TransientFailure || s == connectivity.Shutdown {
+			return nil, fmt.Errorf("gRPC connection entered state %s, giving up", s.String())
+		}
+		if !conn.WaitForStateChange(waitCtx, s) {
+			return nil, fmt.Errorf("gRPC connection did not become ready within timeout. Last state: %s", s.String())
+		}
 	}
 
 	client := api_v2.NewSamplingManagerClient(conn)
