@@ -57,16 +57,24 @@ func (plug *jaegerRemotePlugin) initClient(ctx context.Context) error {
 	otel.SetTracerProvider(tp)
 
 	plug.clientTracer = &clientComponent{tracerProvider: tp}
+	plug.wgClient.Add(1)
 
 	go func() {
+		defer plug.wgClient.Done()
 		ticker := time.Tick(plug.config.ClientRate)
 		for {
-			<-ticker
-			plug.log.Debug("[jaeger_remote] jeager sampling is alive %v", time.Now())
+			select {
+			case <-ticker:
+				plug.log.Debug("[jaeger_remote] jeager sampling is alive %v", time.Now())
+			case <-plug.shutdown:
+				return
+			}
 		}
 	}()
 
+	plug.wgClient.Add(1)
 	go func() {
+		defer plug.wgClient.Done()
 		<-ctx.Done()
 		plug.log.Info("shutting down client tracer provider...")
 
@@ -110,7 +118,7 @@ func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 	// Start servers only if their listen addresses are configured.
 	var err error
 	if plug.config.ServerHttpListenAddr != "" {
-		plug.server.httpServer = plug.startHttpServer()
+		plug.server.httpServer = plug.startHttpServerFn(plug)
 	}
 	if plug.config.ServerGrpcListenAddr != "" {
 		plug.server.grpcServer, err = plug.startGrpcServer()
@@ -129,7 +137,10 @@ func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 		return errors.New("server mode is enabled, but neither 'server.http.listen_addr' nor 'server.grpc.listen_addr' are configured")
 	}
 
+	plug.wgServer.Add(1)
+
 	go func() {
+		defer plug.wgServer.Done()
 		<-ctx.Done()
 		plug.log.Info("shutting down server components...")
 		if plug.server.grpcServer != nil {
@@ -338,6 +349,8 @@ func (plug *jaegerRemotePlugin) startGrpcServer() (*grpc.Server, error) {
 }
 
 func (plug *jaegerRemotePlugin) startProactiveCacheWarmer(ctx context.Context) {
+	plug.wgCache.Add(1)
+	defer plug.wgCache.Done()
 	warmUp := func() {
 		plug.log.Debug("proactive cache warmer starting refresh cycle...")
 		for _, serviceName := range plug.config.ServerServiceNames {
@@ -355,7 +368,7 @@ func (plug *jaegerRemotePlugin) startProactiveCacheWarmer(ctx context.Context) {
 		select {
 		case <-ticker.C:
 			warmUp()
-		case <-ctx.Done():
+		case <-plug.shutdown:
 			plug.log.Info("proactive cache warmer stopped.")
 			return
 		}

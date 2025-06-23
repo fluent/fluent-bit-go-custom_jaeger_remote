@@ -39,6 +39,14 @@ type jaegerRemotePlugin struct {
 
 	// newSamplerFn allows injecting a mock sampler factory for testing.
 	newSamplerFn func(context.Context, *Config) (*remoteSampler, error)
+	shutdown     chan struct{}
+
+	// startHttpServerFn allows injecting a mock http server starter for testing.
+	startHttpServerFn func(p *jaegerRemotePlugin) *http.Server
+
+	wgClient *sync.WaitGroup
+	wgServer *sync.WaitGroup
+	wgCache  *sync.WaitGroup
 }
 
 type serverComponent struct {
@@ -121,9 +129,25 @@ func (plug *jaegerRemotePlugin) Init(ctx context.Context, fbit *plugin.Fluentbit
 	}
 	plug.config = cfg
 
+	if plug.wgClient == nil {
+		plug.wgClient = &sync.WaitGroup{}
+	}
+	if plug.wgServer == nil {
+		plug.wgServer = &sync.WaitGroup{}
+	}
+	if plug.wgCache == nil {
+		plug.wgCache = &sync.WaitGroup{}
+	}
+	plug.shutdown = make(chan struct{})
+
 	// Default to the real sampler factory if none is injected for tests.
 	if plug.newSamplerFn == nil {
 		plug.newSamplerFn = newRemoteSampler
+	}
+
+	if plug.startHttpServerFn == nil {
+		// Use the real HTTP server starter by default.
+		plug.startHttpServerFn = (*jaegerRemotePlugin).startHttpServer
 	}
 
 	if cfg.Mode == "client" || cfg.Mode == "all" {
@@ -137,6 +161,11 @@ func (plug *jaegerRemotePlugin) Init(ctx context.Context, fbit *plugin.Fluentbit
 		}
 	}
 	plug.log.Info("plugin initialized successfully in mode: '%s'", cfg.Mode)
+	go func() {
+		<-ctx.Done()
+		close(plug.shutdown)
+	}()
+
 	return nil
 }
 

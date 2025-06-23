@@ -4,7 +4,10 @@
 package main
 
 import (
+	"bytes"
+	"log"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,27 +15,34 @@ import (
 	"github.com/calyptia/plugin"
 )
 
-// mapConfigLoader is a mock implementation of plugin.ConfigLoader for testing.
 type mapConfigLoader map[string]string
 
 func (m mapConfigLoader) String(key string) string {
 	return m[key]
 }
 
-// newTestLogger creates a logger that integrates with the Go testing framework.
 func newTestLogger(t testing.TB) plugin.Logger {
 	t.Helper()
-	return &testLogger{t: t}
+	return &testLogger{log: log.New(new(bytes.Buffer), "", 0), t: t}
 }
 
 type testLogger struct {
-	t testing.TB
+	log *log.Logger
+	t   testing.TB
+	mu sync.Mutex
 }
 
-func (l *testLogger) Error(format string, args ...any) { l.t.Logf("ERROR: "+format, args...) }
-func (l *testLogger) Warn(format string, args ...any)  { l.t.Logf("WARN: "+format, args...) }
-func (l *testLogger) Info(format string, args ...any)  { l.t.Logf("INFO: "+format, args...) }
-func (l *testLogger) Debug(format string, args ...any) { l.t.Logf("DEBUG: "+format, args...) }
+func (l *testLogger) logf(level, format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.t.Logf(level+": "+format, args...)
+	l.log.Printf(level+": "+format, args...)
+}
+
+func (l *testLogger) Error(format string, args ...any) { l.logf("ERROR", format, args...) }
+func (l *testLogger) Warn(format string, args ...any)  { l.logf("WARN", format, args...) }
+func (l *testLogger) Info(format string, args ...any)  { l.logf("INFO", format, args...) }
+func (l *testLogger) Debug(format string, args ...any) { l.logf("DEBUG", format, args...) }
 
 // --- Test Cases ---
 
