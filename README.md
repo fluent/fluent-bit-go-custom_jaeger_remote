@@ -246,7 +246,7 @@ customs:
 
 Put c-chared object in the specified path and run fluent-bit:
 
-```
+```console
 $ /path/to/fluent-bit -c fluent-bit.conf
 <Fluent Bit starting...>
 ```
