@@ -10,14 +10,15 @@ This plugin implements Jaeger Remote Sampling protocol on Golang cutom plugin me
 
 ## Building
 
-```
+```console
 $ go mod download
+<snip>
 $ make
 ```
 
 Then, the c-shared object will be created as:
 
-```
+```console
 ls *.so
 custom_jeager_remote.so
 ```
@@ -35,6 +36,8 @@ For custom jeager plugin, we need to add custom section in fluent-bit conf:
 
 ### Basic structure
 
+With ini format:
+
 ```ini
 [CUSTOM]
     # The name registered in the Go code ("jaeger_remote")
@@ -47,7 +50,7 @@ For custom jeager plugin, we need to add custom section in fluent-bit conf:
     # --- Add parameters for the selected mode below ---
 ```
 
-#### Yaml format
+With Yaml format:
 
 ```yaml
 customs:
@@ -63,7 +66,7 @@ customs:
 
 In this mode, the plugin acts as an OpenTelemetry client, fetching sampling strategies from an external server.
 
-#### Ini format
+With ini format:
 
 ```ini
 [CUSTOM]
@@ -77,7 +80,7 @@ In this mode, the plugin acts as an OpenTelemetry client, fetching sampling stra
     client.sampling_url http://localhost:5778/sampling
 ```
 
-#### Yaml format
+With Yaml format:
 
 ```yaml
 customs:
@@ -95,8 +98,7 @@ customs:
 
 In this mode, the plugin polls a Jaeger Collector for strategies and serves them via its own HTTP and/or gRPC endpoints. You can enable one or both by providing their listen addresses.
 
-
-#### Ini format
+With ini format:
 
 ```ini
 [CUSTOM]
@@ -116,7 +118,7 @@ In this mode, the plugin polls a Jaeger Collector for strategies and serves them
     server.keepalive.time         30s
 ```
 
-#### Yaml format
+With Yaml format:
 
 ```yaml
 customs:
@@ -140,8 +142,7 @@ customs:
 
 This mode loads a static strategy file and serves it via HTTP and/or gRPC. It does not connect to a remote Jaeger Collector.
 
-
-#### Ini format
+With ini format:
 
 ```ini
 [CUSTOM]
@@ -155,8 +156,7 @@ This mode loads a static strategy file and serves it via HTTP and/or gRPC. It do
     server.http.listen_addr  0.0.0.0:8899
 ```
 
-
-#### Yaml format
+With Yaml format:
 
 ```yaml
 customs:
@@ -170,13 +170,11 @@ customs:
     server.http.listen_addr:  0.0.0.0:8899
 ```
 
-
 ### Mode: All
 
 This mode enables both client and server functionalities simultaneously.
 
-
-#### Ini format
+With ini format:
 
 ```ini
 [CUSTOM]
@@ -194,7 +192,7 @@ This mode enables both client and server functionalities simultaneously.
     server.grpc.listen_addr 0.0.0.0:9099
 ```
 
-#### Yaml format
+With Yaml format:
 
 ```yaml
 customs:
@@ -250,4 +248,5 @@ Put c-chared object in the specified path and run fluent-bit:
 
 ```
 $ /path/to/fluent-bit -c fluent-bit.conf
+<Fluent Bit starting...>
 ```
