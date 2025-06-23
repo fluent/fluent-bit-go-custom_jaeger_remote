@@ -114,7 +114,7 @@ func startMockHTTPSamplingServer(t *testing.T, strategy *api_v2.SamplingStrategy
 
 func Test_InitServer_FileStrategy(t *testing.T) {
 	t.Run("successfully initializes server using a strategy file", func(t *testing.T) {
-		var wgServer sync.WaitGroup
+		var wgServer, wgLifecycle sync.WaitGroup
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -146,7 +146,7 @@ func Test_InitServer_FileStrategy(t *testing.T) {
 				"server.http.listen_addr": httpListenAddr,
 			},
 		}
-		plug := &jaegerRemotePlugin{wgServer: &wgServer}
+		plug := &jaegerRemotePlugin{wgServer: &wgServer, wgLifecycle: &wgLifecycle}
 		err = plug.Init(ctx, fbit)
 		assert.NoError(t, err)
 
@@ -165,7 +165,7 @@ func Test_InitServer_FileStrategy(t *testing.T) {
 
 		cancel()
 		wgServer.Wait()
-		time.Sleep(50 * time.Millisecond)
+		wgLifecycle.Wait()
 	})
 }
 
@@ -204,6 +204,7 @@ func Test_InitServer_FileStrategyErrors(t *testing.T) {
 
 func Test_InitClient(t *testing.T) {
 	t.Run("successfully initializes in client mode", func(t *testing.T) {
+		var wgLifecycle sync.WaitGroup
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
 		mockStrategy := &api_v2.SamplingStrategyResponse{
@@ -226,7 +227,7 @@ func Test_InitClient(t *testing.T) {
 				"client.sampling_url": mockSamplingSrv.URL,
 			},
 		}
-		plug := &jaegerRemotePlugin{}
+		plug := &jaegerRemotePlugin{wgLifecycle: &wgLifecycle}
 
 		err := plug.Init(ctx, fbit)
 		assert.NoError(t, err)
@@ -240,13 +241,13 @@ func Test_InitClient(t *testing.T) {
 
 		// Explicitly cancel and wait to ensure goroutines are cleaned up before test exits.
 		cancel()
-		plug.wgClient.Wait()
+		wgLifecycle.Wait()
 	})
 }
 
 func Test_startProactiveCacheWarmer(t *testing.T) {
 	t.Run("proactive warmer fetches strategies on startup and periodically", func(t *testing.T) {
-		var wgServer, wgCache sync.WaitGroup
+		var wgServer, wgCache, wgLifecycle sync.WaitGroup
 		ctx, cancel := context.WithCancel(context.Background())
 		// No defer, we cancel manually to control shutdown sequence
 
@@ -268,7 +269,7 @@ func Test_startProactiveCacheWarmer(t *testing.T) {
 				"server.retry.initial_interval": "10ms",
 			},
 		}
-		plug := &jaegerRemotePlugin{wgServer: &wgServer, wgCache: &wgCache}
+		plug := &jaegerRemotePlugin{wgServer: &wgServer, wgCache: &wgCache, wgLifecycle: &wgLifecycle}
 
 		plug.newSamplerFn = func(ctx context.Context, cfg *Config) (*remoteSampler, error) {
 			dialOpts := []grpc.DialOption{
@@ -299,6 +300,7 @@ func Test_startProactiveCacheWarmer(t *testing.T) {
 		cancel()
 		wgServer.Wait()
 		wgCache.Wait()
+		wgLifecycle.Wait()
 	})
 }
 
@@ -318,7 +320,7 @@ func Test_InitServer_EndToEnd(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			var wgServer, wgCache sync.WaitGroup
+			var wgServer, wgCache, wgLifecycle sync.WaitGroup
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
@@ -340,7 +342,7 @@ func Test_InitServer_EndToEnd(t *testing.T) {
 					"server.headers":                tc.configHeaders,
 				},
 			}
-			plug := &jaegerRemotePlugin{wgServer: &wgServer, wgCache: &wgCache}
+			plug := &jaegerRemotePlugin{wgServer: &wgServer, wgCache: &wgCache, wgLifecycle: &wgLifecycle}
 
 			plug.newSamplerFn = func(ctx context.Context, cfg *Config) (*remoteSampler, error) {
 				dialOpts := []grpc.DialOption{
@@ -386,6 +388,7 @@ func Test_InitServer_EndToEnd(t *testing.T) {
 			cancel()
 			wgServer.Wait()
 			wgCache.Wait()
+			wgLifecycle.Wait()
 		})
 	}
 }
