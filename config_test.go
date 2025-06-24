@@ -29,7 +29,7 @@ func newTestLogger(t testing.TB) plugin.Logger {
 type testLogger struct {
 	log *log.Logger
 	t   testing.TB
-	mu sync.Mutex
+	mu  sync.Mutex
 }
 
 func (l *testLogger) logf(level, format string, args ...any) {

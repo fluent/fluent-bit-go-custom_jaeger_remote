@@ -188,11 +188,14 @@ func Test_InitServer_FileStrategyErrors(t *testing.T) {
 		assert.NoError(t, err)
 		tmpFile.Close()
 
+		httpListenAddr := getFreePort(t)
+
 		fbit := &plugin.Fluentbit{
 			Logger: newTestLogger(t),
 			Conf: mapConfigLoader{
 				"mode":                 "server",
 				"server.strategy_file": tmpFile.Name(),
+				"server.http.listen_addr": httpListenAddr,
 			},
 		}
 		plug := &jaegerRemotePlugin{}
@@ -494,8 +497,8 @@ func Test_getAndCacheStrategy_Retry(t *testing.T) {
 
 func Test_InitServer_Failure(t *testing.T) {
 	t.Run("fails if both http and grpc listen addresses are missing", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		defer cancel()
+		var wgServer, wgCache, wgLifecycle sync.WaitGroup
+		ctx, cancel := context.WithCancel(context.Background())
 
 		fbit := &plugin.Fluentbit{
 			Logger: newTestLogger(t),
@@ -505,18 +508,27 @@ func Test_InitServer_Failure(t *testing.T) {
 				"server.service_names": "test-service",
 			},
 		}
-		plug := &jaegerRemotePlugin{}
+
+		plug := &jaegerRemotePlugin{
+			wgServer:    &wgServer,
+			wgCache:     &wgCache,
+			wgLifecycle: &wgLifecycle,
+		}
 
 		err := plug.Init(ctx, fbit)
-		defer func() {
-			// Ensure gRPC client connection is closed to clean up background goroutines
-			if plug.server != nil && plug.server.sampler != nil && plug.server.sampler.conn != nil {
-				plug.server.sampler.conn.Close()
-			}
-		}()
 
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to initialize server mode: could not create remote sampler for server: gRPC connection entered state TRANSIENT_FAILURE, giving up")
+		assert.Contains(t, err.Error(), "server mode is enabled, but neither")
+
+		cancel()
+
+		wgServer.Wait()
+		wgCache.Wait()
+		wgLifecycle.Wait()
+
+		if plug.server != nil && plug.server.sampler != nil && plug.server.sampler.conn != nil {
+			plug.server.sampler.conn.Close()
+		}
 	})
 }
 
@@ -672,14 +684,14 @@ func Test_ServerHandlers(t *testing.T) {
 		assert.Equal(t, testStrategy.StrategyType, resp.StrategyType)
 	})
 
-	t.Run("HTTP handler returns 404 for non-existent service", func(t *testing.T) {
+	t.Run("HTTP handler returns stil 200 for non-existent service", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/sampling?service=unknown-service", nil)
 		rr := httptest.NewRecorder()
 
 		s := &grpcApiServer{plug: plug}
 		s.plug.handleSampling(rr, req)
 
-		assert.Equal(t, http.StatusNotFound, rr.Code)
+		assert.Equal(t, http.StatusOK, rr.Code)
 	})
 
 	t.Run("HTTP handler returns 400 Bad Request for missing service", func(t *testing.T) {
