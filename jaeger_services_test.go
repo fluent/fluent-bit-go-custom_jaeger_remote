@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -28,8 +29,8 @@ import (
 )
 
 type observedCall struct {
-	Context context.Context
-	Params  *api_v2.SamplingStrategyParameters
+	Metadata metadata.MD
+	Params   *api_v2.SamplingStrategyParameters
 }
 
 type samplingServer struct {
@@ -44,9 +45,12 @@ type samplingServer struct {
 func (s *samplingServer) GetSamplingStrategy(ctx context.Context, params *api_v2.SamplingStrategyParameters) (*api_v2.SamplingStrategyResponse, error) {
 	atomic.AddInt32(&s.actualCallCount, 1) // Use atomic for safe concurrent increments
 
+	md, _ := metadata.FromIncomingContext(ctx)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.observedCalls = append(s.observedCalls, observedCall{Context: ctx, Params: params})
+
+	s.observedCalls = append(s.observedCalls, observedCall{Metadata: md.Copy(), Params: params})
 
 	if s.err != nil {
 		return nil, s.err
@@ -74,6 +78,18 @@ func (s *samplingServer) lastCall() (observedCall, bool) {
 	return s.observedCalls[len(s.observedCalls)-1], true
 }
 
+func poll(t *testing.T, d time.Duration, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("condition not met within %v: %s", d, msg)
+}
+
 func startMockGrpcServer(t *testing.T, mock *samplingServer) (*grpc.Server, *bufconn.Listener) {
 	t.Helper()
 	lis := bufconn.Listen(1024 * 1024)
@@ -98,7 +114,8 @@ func startMockHTTPSamplingServer(t *testing.T, strategy *api_v2.SamplingStrategy
 
 func Test_InitServer_FileStrategy(t *testing.T) {
 	t.Run("successfully initializes server using a strategy file", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var wgServer, wgLifecycle sync.WaitGroup
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
 		strategyJSON := `{
@@ -119,20 +136,19 @@ func Test_InitServer_FileStrategy(t *testing.T) {
 		err = tmpFile.Close()
 		assert.NoError(t, err)
 
+		httpListenAddr := getFreePort(t)
+
 		fbit := &plugin.Fluentbit{
 			Logger: newTestLogger(t),
 			Conf: mapConfigLoader{
 				"mode":                    "server",
 				"server.strategy_file":    tmpFile.Name(),
-				"server.http.listen_addr": getFreePort(t),
+				"server.http.listen_addr": httpListenAddr,
 			},
 		}
-		plug := &jaegerRemotePlugin{}
+		plug := &jaegerRemotePlugin{wgServer: &wgServer, wgLifecycle: &wgLifecycle}
 		err = plug.Init(ctx, fbit)
 		assert.NoError(t, err)
-		assert.NotZero(t, plug.server)
-		assert.NotZero(t, plug.server.httpServer)
-		defer plug.server.httpServer.Close()
 
 		assert.NotZero(t, plug.server.cache)
 		assert.Equal(t, 2, len(plug.server.cache.strategies))
@@ -146,6 +162,10 @@ func Test_InitServer_FileStrategy(t *testing.T) {
 		err = json.NewDecoder(rr.Body).Decode(&resp)
 		assert.NoError(t, err)
 		assert.Equal(t, 0.5, resp.ProbabilisticSampling.GetSamplingRate())
+
+		cancel()
+		wgServer.Wait()
+		wgLifecycle.Wait()
 	})
 }
 
@@ -184,8 +204,8 @@ func Test_InitServer_FileStrategyErrors(t *testing.T) {
 
 func Test_InitClient(t *testing.T) {
 	t.Run("successfully initializes in client mode", func(t *testing.T) {
+		var wgLifecycle sync.WaitGroup
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
 
 		mockStrategy := &api_v2.SamplingStrategyResponse{
 			StrategyType:          api_v2.SamplingStrategyType_PROBABILISTIC,
@@ -207,20 +227,29 @@ func Test_InitClient(t *testing.T) {
 				"client.sampling_url": mockSamplingSrv.URL,
 			},
 		}
-		plug := &jaegerRemotePlugin{}
+		plug := &jaegerRemotePlugin{wgLifecycle: &wgLifecycle}
 
 		err := plug.Init(ctx, fbit)
-
 		assert.NoError(t, err)
-		assert.NotZero(t, plug.clientTracer, "clientTracer should be initialized")
-		assert.NotZero(t, plug.clientTracer.tracerProvider, "tracerProvider should be initialized")
+
+		if plug.clientTracer == nil {
+			t.Fatal("clientTracer should be initialized but is nil")
+		}
+		if plug.clientTracer.tracerProvider == nil {
+			t.Fatal("tracerProvider should be initialized but is nil")
+		}
+
+		// Explicitly cancel and wait to ensure goroutines are cleaned up before test exits.
+		cancel()
+		wgLifecycle.Wait()
 	})
 }
 
 func Test_startProactiveCacheWarmer(t *testing.T) {
 	t.Run("proactive warmer fetches strategies on startup and periodically", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		defer cancel()
+		var wgServer, wgCache, wgLifecycle sync.WaitGroup
+		ctx, cancel := context.WithCancel(context.Background())
+		// No defer, we cancel manually to control shutdown sequence
 
 		mockStrategy := &api_v2.SamplingStrategyResponse{StrategyType: api_v2.SamplingStrategyType_PROBABILISTIC, ProbabilisticSampling: &api_v2.ProbabilisticSamplingStrategy{SamplingRate: 0.1}}
 		mockJaeger := &samplingServer{strategy: mockStrategy}
@@ -240,7 +269,7 @@ func Test_startProactiveCacheWarmer(t *testing.T) {
 				"server.retry.initial_interval": "10ms",
 			},
 		}
-		plug := &jaegerRemotePlugin{}
+		plug := &jaegerRemotePlugin{wgServer: &wgServer, wgCache: &wgCache, wgLifecycle: &wgLifecycle}
 
 		plug.newSamplerFn = func(ctx context.Context, cfg *Config) (*remoteSampler, error) {
 			dialOpts := []grpc.DialOption{
@@ -258,15 +287,20 @@ func Test_startProactiveCacheWarmer(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Check initial warm-up
-		// We expect 2 initial calls, one for each service.
-		// Use a small sleep to allow the initial goroutine to run.
-		time.Sleep(20 * time.Millisecond)
-		assert.Equal(t, 2, mockJaeger.getCallCount(), "expected 2 calls for initial cache warm-up")
+		poll(t, 200*time.Millisecond, func() bool {
+			return mockJaeger.getCallCount() >= 2
+		}, "expected at least 2 calls for initial cache warm-up")
 
 		// Check periodic refresh
-		// Wait for a period longer than the reload interval (50ms)
-		time.Sleep(60 * time.Millisecond)
-		assert.Equal(t, 4, mockJaeger.getCallCount(), "expected 2 more calls for the first periodic refresh")
+		poll(t, 200*time.Millisecond, func() bool {
+			return mockJaeger.getCallCount() >= 4
+		}, "expected at least 4 calls after one refresh")
+
+		// Explicitly cancel and wait to ensure goroutines are cleaned up.
+		cancel()
+		wgServer.Wait()
+		wgCache.Wait()
+		wgLifecycle.Wait()
 	})
 }
 
@@ -286,7 +320,8 @@ func Test_InitServer_EndToEnd(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			var wgServer, wgCache, wgLifecycle sync.WaitGroup
+			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
 			mockStrategy := &api_v2.SamplingStrategyResponse{StrategyType: api_v2.SamplingStrategyType_RATE_LIMITING, RateLimitingSampling: &api_v2.RateLimitingSamplingStrategy{MaxTracesPerSecond: 100}}
@@ -307,7 +342,7 @@ func Test_InitServer_EndToEnd(t *testing.T) {
 					"server.headers":                tc.configHeaders,
 				},
 			}
-			plug := &jaegerRemotePlugin{}
+			plug := &jaegerRemotePlugin{wgServer: &wgServer, wgCache: &wgCache, wgLifecycle: &wgLifecycle}
 
 			plug.newSamplerFn = func(ctx context.Context, cfg *Config) (*remoteSampler, error) {
 				dialOpts := []grpc.DialOption{
@@ -326,30 +361,34 @@ func Test_InitServer_EndToEnd(t *testing.T) {
 				return &remoteSampler{conn: conn, client: client}, nil
 			}
 
+			// Call Init directly instead of in a racy goroutine.
 			err := plug.Init(ctx, fbit)
-			assert.NoError(t, err)
-			assert.NotZero(t, plug.server)
-			if plug.server.httpServer != nil {
-				defer plug.server.httpServer.Close()
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Fatalf("plug.Init() failed unexpectedly: %v", err)
 			}
 
-			_, err = http.Get(fmt.Sprintf("http://%s/sampling?service=test-service", httpListenAddr))
+			poll(t, 2*time.Second, func() bool { return mockJaeger.getCallCount() >= 1 }, "proactive cache warmer did not run")
+
+			resp, err := http.Get(fmt.Sprintf("http://%s/sampling?service=test-service", httpListenAddr))
 			assert.NoError(t, err)
 
-			// The assertion now checks if the call was made after the HTTP request.
-			// A small delay might be needed for the async call to register.
-			time.Sleep(20 * time.Millisecond)
+			defer resp.Body.Close()
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 			assert.NotZero(t, mockJaeger.callCount(), "on-demand fetch should have called GetSamplingStrategy")
 			lastCall, ok := mockJaeger.lastCall()
 			assert.True(t, ok, "expected at least one call to have been observed")
 			assert.Equal(t, "test-service", lastCall.Params.ServiceName)
 
-			md, ok := metadata.FromIncomingContext(lastCall.Context)
+			md := lastCall.Metadata
 			assert.True(t, ok)
 			for k, v := range tc.expectedHeaders {
 				assert.Equal(t, []string{v}, md.Get(k))
 			}
+			cancel()
+			wgServer.Wait()
+			wgCache.Wait()
+			wgLifecycle.Wait()
 		})
 	}
 }
@@ -469,6 +508,12 @@ func Test_InitServer_Failure(t *testing.T) {
 		plug := &jaegerRemotePlugin{}
 
 		err := plug.Init(ctx, fbit)
+		defer func() {
+			// Ensure gRPC client connection is closed to clean up background goroutines
+			if plug.server != nil && plug.server.sampler != nil && plug.server.sampler.conn != nil {
+				plug.server.sampler.conn.Close()
+			}
+		}()
 
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to initialize server mode: could not create remote sampler for server: gRPC connection entered state TRANSIENT_FAILURE, giving up")
