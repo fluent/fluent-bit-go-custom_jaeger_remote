@@ -94,14 +94,15 @@ func (plug *jaegerRemotePlugin) initClient(ctx context.Context) error {
 }
 
 // --- Server Mode Initialization ---
+
 func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 	plug.log.Info("initializing server mode...")
-	plug.server = &serverComponent{}
-	plug.server.cache = &samplingStrategyCache{
-		strategies: make(map[string]*cacheEntry),
+	plug.server = &serverComponent{
+		cache: &samplingStrategyCache{
+			strategies: make(map[string]*cacheEntry),
+		},
 	}
 
-	// Determine strategy source: remote or file
 	if plug.config.ServerStrategyFile != "" {
 		if err := plug.loadStrategiesFromFile(); err != nil {
 			return fmt.Errorf("could not load strategies from file: %w", err)
@@ -118,8 +119,8 @@ func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 		}
 	}
 
-	// Start servers only if their listen addresses are configured.
 	var err error
+	// Start servers only if their listen addresses are configured.
 	if plug.config.ServerHttpListenAddr != "" {
 		plug.server.httpServer = plug.startHttpServerFn(plug)
 	}
