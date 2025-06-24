@@ -210,7 +210,8 @@ func (plug *jaegerRemotePlugin) getAndCacheStrategy(ctx context.Context, service
 			plug.log.Warn("failed to fetch new strategy for service '%s', returning stale data. error: %v", serviceName, err)
 			return entry.strategy, nil
 		}
-		return nil, fmt.Errorf("failed to fetch strategy for service %s: %w", serviceName, err)
+		plug.log.Warn("failed to fetch initial strategy for service '%s', will retry later. error: %v", serviceName, err)
+		return nil, nil
 	}
 
 	newEntry := &cacheEntry{

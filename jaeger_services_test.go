@@ -672,14 +672,14 @@ func Test_ServerHandlers(t *testing.T) {
 		assert.Equal(t, testStrategy.StrategyType, resp.StrategyType)
 	})
 
-	t.Run("HTTP handler returns 404 for non-existent service", func(t *testing.T) {
+	t.Run("HTTP handler returns stil 200 for non-existent service", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/sampling?service=unknown-service", nil)
 		rr := httptest.NewRecorder()
 
 		s := &grpcApiServer{plug: plug}
 		s.plug.handleSampling(rr, req)
 
-		assert.Equal(t, http.StatusNotFound, rr.Code)
+		assert.Equal(t, http.StatusOK, rr.Code)
 	})
 
 	t.Run("HTTP handler returns 400 Bad Request for missing service", func(t *testing.T) {
