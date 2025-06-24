@@ -266,25 +266,24 @@ func newRemoteSampler(ctx context.Context, cfg *Config) (*remoteSampler, error) 
 		return nil, fmt.Errorf("grpc newclient to jaeger collector failed: %w", err)
 	}
 
-	waitCtx, connectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	dialCtx, connectCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer connectCancel()
 
 	conn.Connect()
 
-	for {
-		s := conn.GetState()
-		if s == connectivity.Ready {
-			break
-		}
-		if s == connectivity.TransientFailure || s == connectivity.Shutdown {
-			return nil, fmt.Errorf("gRPC connection entered state %s, giving up", s.String())
-		}
-		if !conn.WaitForStateChange(waitCtx, s) {
-			return nil, fmt.Errorf("gRPC connection did not become ready within timeout. Last state: %s", s.String())
-		}
+	if err != nil {
+		return nil, fmt.Errorf("grpc newclient config failed: %w", err)
 	}
 
 	client := api_v2.NewSamplingManagerClient(conn)
+
+	s := conn.GetState()
+	if s != connectivity.Ready {
+		if !conn.WaitForStateChange(dialCtx, s) {
+			return nil, fmt.Errorf("gRPC connection did not become ready within timeout. Last state: %s", conn.GetState())
+		}
+	}
+
 	return &remoteSampler{conn: conn, client: client}, nil
 }
 

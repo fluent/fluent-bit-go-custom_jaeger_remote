@@ -516,7 +516,7 @@ func Test_InitServer_Failure(t *testing.T) {
 		}()
 
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to initialize server mode: could not create remote sampler for server: gRPC connection entered state TRANSIENT_FAILURE, giving up")
+		assert.Contains(t, err.Error(), "failed to initialize server mode: server mode is enabled, but neither 'server.http.listen_addr' nor 'server.grpc.listen_addr' are configured")
 	})
 }
 
