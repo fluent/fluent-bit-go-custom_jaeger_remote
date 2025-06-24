@@ -75,8 +75,12 @@ func (plug *jaegerRemotePlugin) initClient(ctx context.Context) error {
 		}
 	}()
 
-	// The dedicated shutdown goroutine has been removed.
-	// Its logic is now in the cleanup() method.
+	// Marker to prevent data races
+	plug.wgClient.Add(1)
+	go func() {
+		defer plug.wgClient.Done()
+		<-ctx.Done()
+	}()
 
 	plug.log.Info("client mode initialized, sampling from '%s'", plug.config.ClientSamplingURL)
 	return nil
@@ -129,8 +133,12 @@ func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 		return errors.New("server mode is enabled, but neither 'server.http.listen_addr' nor 'server.grpc.listen_addr' are configured")
 	}
 
-	// The dedicated shutdown goroutine has been removed.
-	// Its logic is now in the cleanup() method.
+	// Marker to prevent data races
+	plug.wgServer.Add(1)
+	go func() {
+		defer plug.wgServer.Done()
+		<-ctx.Done()
+	}()
 
 	logMsg := "server mode initialized."
 	if plug.server.httpServer != nil {
