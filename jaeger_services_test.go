@@ -188,11 +188,14 @@ func Test_InitServer_FileStrategyErrors(t *testing.T) {
 		assert.NoError(t, err)
 		tmpFile.Close()
 
+		httpListenAddr := getFreePort(t)
+
 		fbit := &plugin.Fluentbit{
 			Logger: newTestLogger(t),
 			Conf: mapConfigLoader{
 				"mode":                 "server",
 				"server.strategy_file": tmpFile.Name(),
+				"server.http.listen_addr": httpListenAddr,
 			},
 		}
 		plug := &jaegerRemotePlugin{}
