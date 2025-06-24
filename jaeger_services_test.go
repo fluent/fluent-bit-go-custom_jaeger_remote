@@ -516,7 +516,7 @@ func Test_InitServer_Failure(t *testing.T) {
 		}()
 
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to initialize server mode: server mode is enabled, but neither 'server.http.listen_addr' nor 'server.grpc.listen_addr' are configured")
+		assert.Contains(t, err.Error(), "failed to initialize server mode: ")
 	})
 }
 

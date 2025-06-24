@@ -39,14 +39,14 @@ type jaegerRemotePlugin struct {
 
 	// newSamplerFn allows injecting a mock sampler factory for testing.
 	newSamplerFn func(context.Context, *Config) (*remoteSampler, error)
-	shutdown     chan struct{}
+	reload       chan struct{}
 
 	// startHttpServerFn allows injecting a mock http server starter for testing.
 	startHttpServerFn func(p *jaegerRemotePlugin) *http.Server
 
-	wgClient *sync.WaitGroup
-	wgServer *sync.WaitGroup
-	wgCache  *sync.WaitGroup
+	wgClient    *sync.WaitGroup
+	wgServer    *sync.WaitGroup
+	wgCache     *sync.WaitGroup
 	wgLifecycle *sync.WaitGroup
 }
 
@@ -122,9 +122,9 @@ type grpcApiServer struct {
 //
 
 func (plug *jaegerRemotePlugin) Init(ctx context.Context, fbit *plugin.Fluentbit) error {
-	if plug.shutdown != nil {
+	if plug.reload != nil {
 		plug.log.Info("Re-initializing plugin, shutting down the previous instance...")
-		plug.cleanup()
+		plug.cleanupOnReload()
 	}
 	plug.log = fbit.Logger
 	cfg, err := loadConfig(fbit)
@@ -146,7 +146,7 @@ func (plug *jaegerRemotePlugin) Init(ctx context.Context, fbit *plugin.Fluentbit
 	if plug.wgLifecycle == nil {
 		plug.wgLifecycle = &sync.WaitGroup{}
 	}
-	plug.shutdown = make(chan struct{})
+	plug.reload = make(chan struct{})
 
 	// Default to the real sampler factory if none is injected for tests.
 	if plug.newSamplerFn == nil {
@@ -174,32 +174,19 @@ func (plug *jaegerRemotePlugin) Init(ctx context.Context, fbit *plugin.Fluentbit
 		defer plug.wgLifecycle.Done()
 		<-ctx.Done()
 		plug.log.Debug("Context cancelled, shutting down plugin instance...")
-		plug.cleanup()
 	}()
 
 	return nil
 }
 
-func (plug *jaegerRemotePlugin) cleanup() {
+func (plug *jaegerRemotePlugin) cleanupOnReload() {
 	// Signal all background goroutines to stop.
 	// Use a non-blocking close to prevent panic if called multiple times.
 	select {
-	case <-plug.shutdown:
+	case <-plug.reload:
 		// already closed
 	default:
-		close(plug.shutdown)
-	}
-
-	// --- Shutdown Client Components ---
-	if plug.clientTracer != nil {
-		// Shutdown the tracer provider
-		plug.wgClient.Wait()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := plug.clientTracer.tracerProvider.Shutdown(shutdownCtx); err != nil {
-			plug.log.Error("failed to shutdown tracer provider: %v", err)
-		}
-		plug.log.Info("Client tracer provider shut down.")
+		close(plug.reload)
 	}
 
 	// --- Shutdown Server Components ---
@@ -216,19 +203,39 @@ func (plug *jaegerRemotePlugin) cleanup() {
 			}
 			plug.log.Info("HTTP server stopped.")
 		}
+	}
+
+	if plug.clientTracer != nil {
+		plug.wgClient.Wait()
+	}
+	plug.wgServer.Wait()
+
+	// --- Shutdown Client Components ---
+	if plug.clientTracer != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := plug.clientTracer.tracerProvider.Shutdown(shutdownCtx); err != nil {
+			plug.log.Error("failed to shutdown tracer provider: %v", err)
+		}
+		plug.log.Info("Client tracer provider shut down.")
+	}
+
+	if plug.server != nil {
+		plug.wgCache.Wait()
+	}
+
+	// --- Shutdown Server Components ---
+	if plug.server != nil {
 		if plug.server.sampler != nil && plug.server.sampler.conn != nil {
 			_ = plug.server.sampler.conn.Close()
 			plug.log.Info("gRPC client connection to Jaeger Collector closed.")
 		}
-		// Wait for cache warmer and other server goroutines to finish.
-		plug.wgCache.Wait()
-		plug.wgServer.Wait()
 	}
 
 	// Reset state
 	plug.server = nil
 	plug.clientTracer = nil
-	plug.shutdown = nil // Mark as shut down
+	plug.reload = nil // Mark as reloading
 
 	plug.log.Info("Previous plugin instance cleaned up successfully.")
 }

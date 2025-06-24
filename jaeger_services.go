@@ -58,28 +58,35 @@ func (plug *jaegerRemotePlugin) initClient(ctx context.Context) error {
 	otel.SetTracerProvider(tp)
 
 	plug.clientTracer = &clientComponent{tracerProvider: tp}
-	plug.wgClient.Add(1)
 
 	// This is just a simple ticker for logging, it will be stopped by closing plug.shutdown
 	go func() {
-		defer plug.wgClient.Done()
 		ticker := time.NewTicker(plug.config.ClientRate)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
 				plug.log.Debug("[jaeger_remote] jaeger sampling is alive %v", time.Now())
-			case <-plug.shutdown:
+			case <-ctx.Done():
+				return
+			case <-plug.reload:
 				return
 			}
 		}
 	}()
 
-	// Marker to prevent data races
 	plug.wgClient.Add(1)
 	go func() {
 		defer plug.wgClient.Done()
 		<-ctx.Done()
+		plug.log.Info("shutting down client tracer provider...")
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := tp.Shutdown(shutdownCtx); err != nil {
+			plug.log.Error("failed to shutdown tracer provider: %v", err)
+		}
 	}()
 
 	plug.log.Info("client mode initialized, sampling from '%s'", plug.config.ClientSamplingURL)
@@ -133,11 +140,27 @@ func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 		return errors.New("server mode is enabled, but neither 'server.http.listen_addr' nor 'server.grpc.listen_addr' are configured")
 	}
 
-	// Marker to prevent data races
 	plug.wgServer.Add(1)
 	go func() {
 		defer plug.wgServer.Done()
 		<-ctx.Done()
+		plug.log.Info("shutting down server components...")
+		if plug.server.grpcServer != nil {
+			plug.server.grpcServer.GracefulStop()
+			plug.log.Info("gRPC server stopped.")
+		}
+		if plug.server.sampler != nil && plug.server.sampler.conn != nil {
+			_ = plug.server.sampler.conn.Close()
+			plug.log.Info("gRPC client connection to Jaeger Collector closed.")
+		}
+		if plug.server.httpServer != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := plug.server.httpServer.Shutdown(shutdownCtx); err != nil {
+				plug.log.Error("http server shutdown error: %v", err)
+			}
+			plug.log.Info("HTTP server stopped.")
+		}
 	}()
 
 	logMsg := "server mode initialized."
@@ -348,8 +371,11 @@ func (plug *jaegerRemotePlugin) startProactiveCacheWarmer(ctx context.Context) {
 		select {
 		case <-ticker.C:
 			warmUp()
-		case <-plug.shutdown:
+		case <-ctx.Done():
 			plug.log.Info("proactive cache warmer stopped.")
+			return
+		case <-plug.reload:
+			plug.log.Info("proactive cache warmer stopped. reloading")
 			return
 		}
 	}
