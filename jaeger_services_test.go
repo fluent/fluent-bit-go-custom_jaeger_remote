@@ -497,8 +497,8 @@ func Test_getAndCacheStrategy_Retry(t *testing.T) {
 
 func Test_InitServer_Failure(t *testing.T) {
 	t.Run("fails if both http and grpc listen addresses are missing", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		defer cancel()
+		var wgServer, wgCache, wgLifecycle sync.WaitGroup
+		ctx, cancel := context.WithCancel(context.Background())
 
 		fbit := &plugin.Fluentbit{
 			Logger: newTestLogger(t),
@@ -508,18 +508,27 @@ func Test_InitServer_Failure(t *testing.T) {
 				"server.service_names": "test-service",
 			},
 		}
-		plug := &jaegerRemotePlugin{}
+
+		plug := &jaegerRemotePlugin{
+			wgServer:    &wgServer,
+			wgCache:     &wgCache,
+			wgLifecycle: &wgLifecycle,
+		}
 
 		err := plug.Init(ctx, fbit)
-		defer func() {
-			// Ensure gRPC client connection is closed to clean up background goroutines
-			if plug.server != nil && plug.server.sampler != nil && plug.server.sampler.conn != nil {
-				plug.server.sampler.conn.Close()
-			}
-		}()
 
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to initialize server mode: ")
+		assert.Contains(t, err.Error(), "server mode is enabled, but neither")
+
+		cancel()
+
+		wgServer.Wait()
+		wgCache.Wait()
+		wgLifecycle.Wait()
+
+		if plug.server != nil && plug.server.sampler != nil && plug.server.sampler.conn != nil {
+			plug.server.sampler.conn.Close()
+		}
 	})
 }
 
