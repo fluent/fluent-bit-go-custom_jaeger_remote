@@ -525,10 +525,6 @@ func Test_InitServer_Failure(t *testing.T) {
 		wgServer.Wait()
 		wgCache.Wait()
 		wgLifecycle.Wait()
-
-		if plug.server != nil && plug.server.sampler != nil && plug.server.sampler.conn != nil {
-			plug.server.sampler.conn.Close()
-		}
 	})
 }
 
