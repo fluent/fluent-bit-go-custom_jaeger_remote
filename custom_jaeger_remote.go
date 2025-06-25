@@ -39,7 +39,7 @@ type jaegerRemotePlugin struct {
 
 	// newSamplerFn allows injecting a mock sampler factory for testing.
 	newSamplerFn func(context.Context, *Config) (*remoteSampler, error)
-	reload       chan struct{}
+	shutdown     chan struct{}
 
 	// startHttpServerFn allows injecting a mock http server starter for testing.
 	startHttpServerFn func(p *jaegerRemotePlugin) *http.Server
@@ -122,9 +122,9 @@ type grpcApiServer struct {
 //
 
 func (plug *jaegerRemotePlugin) Init(ctx context.Context, fbit *plugin.Fluentbit) error {
-	if plug.reload != nil {
+	if plug.shutdown != nil {
 		plug.log.Info("Re-initializing plugin, shutting down the previous instance...")
-		plug.cleanupOnReload()
+		plug.cleanup()
 	}
 	plug.log = fbit.Logger
 	cfg, err := loadConfig(fbit)
@@ -146,7 +146,7 @@ func (plug *jaegerRemotePlugin) Init(ctx context.Context, fbit *plugin.Fluentbit
 	if plug.wgLifecycle == nil {
 		plug.wgLifecycle = &sync.WaitGroup{}
 	}
-	plug.reload = make(chan struct{})
+	plug.shutdown = make(chan struct{})
 
 	// Default to the real sampler factory if none is injected for tests.
 	if plug.newSamplerFn == nil {
@@ -174,19 +174,20 @@ func (plug *jaegerRemotePlugin) Init(ctx context.Context, fbit *plugin.Fluentbit
 		defer plug.wgLifecycle.Done()
 		<-ctx.Done()
 		plug.log.Debug("Context cancelled, shutting down plugin instance...")
+		plug.cleanup()
 	}()
 
 	return nil
 }
 
-func (plug *jaegerRemotePlugin) cleanupOnReload() {
+func (plug *jaegerRemotePlugin) cleanup() {
 	// Signal all background goroutines to stop.
 	// Use a non-blocking close to prevent panic if called multiple times.
 	select {
-	case <-plug.reload:
+	case <-plug.shutdown:
 		// already closed
 	default:
-		close(plug.reload)
+		close(plug.shutdown)
 	}
 
 	// --- Shutdown Server Components ---
@@ -208,7 +209,9 @@ func (plug *jaegerRemotePlugin) cleanupOnReload() {
 	if plug.clientTracer != nil {
 		plug.wgClient.Wait()
 	}
-	plug.wgServer.Wait()
+	if plug.server != nil {
+		plug.wgServer.Wait()
+	}
 
 	// --- Shutdown Client Components ---
 	if plug.clientTracer != nil {
@@ -235,7 +238,7 @@ func (plug *jaegerRemotePlugin) cleanupOnReload() {
 	// Reset state
 	plug.server = nil
 	plug.clientTracer = nil
-	plug.reload = nil // Mark as reloading
+	plug.shutdown = nil // Mark as shutdown
 
 	plug.log.Info("Previous plugin instance cleaned up successfully.")
 }
