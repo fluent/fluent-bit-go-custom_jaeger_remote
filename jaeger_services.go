@@ -69,7 +69,7 @@ func (plug *jaegerRemotePlugin) initClient(ctx context.Context) error {
 				plug.log.Debug("[jaeger_remote] jaeger sampling is alive %v", time.Now())
 			case <-ctx.Done():
 				return
-			case <-plug.reload:
+			case <-plug.shutdown:
 				return
 			}
 		}
@@ -80,13 +80,6 @@ func (plug *jaegerRemotePlugin) initClient(ctx context.Context) error {
 		defer plug.wgClient.Done()
 		<-ctx.Done()
 		plug.log.Info("shutting down client tracer provider...")
-
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		if err := tp.Shutdown(shutdownCtx); err != nil {
-			plug.log.Error("failed to shutdown tracer provider: %v", err)
-		}
 	}()
 
 	plug.log.Info("client mode initialized, sampling from '%s'", plug.config.ClientSamplingURL)
@@ -145,23 +138,6 @@ func (plug *jaegerRemotePlugin) initServer(ctx context.Context) error {
 	go func() {
 		defer plug.wgServer.Done()
 		<-ctx.Done()
-		plug.log.Info("shutting down server components...")
-		if plug.server.grpcServer != nil {
-			plug.server.grpcServer.GracefulStop()
-			plug.log.Info("gRPC server stopped.")
-		}
-		if plug.server.sampler != nil && plug.server.sampler.conn != nil {
-			_ = plug.server.sampler.conn.Close()
-			plug.log.Info("gRPC client connection to Jaeger Collector closed.")
-		}
-		if plug.server.httpServer != nil {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := plug.server.httpServer.Shutdown(shutdownCtx); err != nil {
-				plug.log.Error("http server shutdown error: %v", err)
-			}
-			plug.log.Info("HTTP server stopped.")
-		}
 	}()
 
 	logMsg := "server mode initialized."
@@ -375,8 +351,8 @@ func (plug *jaegerRemotePlugin) startProactiveCacheWarmer(ctx context.Context) {
 		case <-ctx.Done():
 			plug.log.Info("proactive cache warmer stopped.")
 			return
-		case <-plug.reload:
-			plug.log.Info("proactive cache warmer stopped. reloading")
+		case <-plug.shutdown:
+			plug.log.Info("proactive cache warmer stopped. cleaning")
 			return
 		}
 	}
