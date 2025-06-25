@@ -209,7 +209,9 @@ func (plug *jaegerRemotePlugin) cleanup() {
 	if plug.clientTracer != nil {
 		plug.wgClient.Wait()
 	}
-	plug.wgServer.Wait()
+	if plug.server != nil {
+		plug.wgServer.Wait()
+	}
 
 	// --- Shutdown Client Components ---
 	if plug.clientTracer != nil {
