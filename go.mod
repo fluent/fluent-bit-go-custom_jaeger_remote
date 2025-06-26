@@ -6,7 +6,7 @@ toolchain go1.24.3
 
 require (
 	github.com/alecthomas/assert/v2 v2.11.0
-	github.com/calyptia/plugin v1.4.2-0.20250624154237-85fdaa6a0013
+	github.com/calyptia/plugin v1.4.2
 	github.com/jaegertracing/jaeger-idl v0.6.0
 	go.opentelemetry.io/contrib/samplers/jaegerremote v0.30.0
 	go.opentelemetry.io/otel v1.36.0
